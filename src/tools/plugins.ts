@@ -471,10 +471,13 @@ export async function getPluginLog(args: unknown): Promise<Record<string, unknow
 
   const fullLog = await readFileUtf8(logPath);
   if (fullLog === null) {
+    // Distinguish "file missing/unreadable" from "plugin logged nothing" —
+    // a silent success here sends people hunting for missing logDebug calls
+    // in plugin code that is logging correctly.
     return {
-      success: true,
-      log: '',
-      message: `No console log found for plugin "${pluginId}". The plugin may not have been run yet, or it produced no output.`,
+      success: false,
+      error: `Console log file not found or unreadable for plugin "${pluginId}" (expected at Plugins/${pluginId}/_MCP-console.log).`,
+      hint: 'The plugin has not been run since the last app launch, or the plugin folder does not exist. Run a command of the plugin first, then read the log again.',
     };
   }
 
