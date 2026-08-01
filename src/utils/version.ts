@@ -110,9 +110,11 @@ const KNOWN_APP_PATHS = [
   path.join(process.env.HOME ?? '', 'Applications/NotePlan.app'),
   path.join(process.env.HOME ?? '', 'Applications/NotePlan Beta.app'),
   path.join(process.env.HOME ?? '', 'Applications/NotePlan - To-Do List & Notes.app'),
-  // Setapp
+  // Setapp (system-wide and per-user install locations)
   '/Applications/Setapp/NotePlan 3.app',
   '/Applications/Setapp/NotePlan.app',
+  path.join(process.env.HOME ?? '', 'Applications/Setapp/NotePlan 3.app'),
+  path.join(process.env.HOME ?? '', 'Applications/Setapp/NotePlan.app'),
 ];
 
 function detectViaPlist(): NotePlanVersion | null {

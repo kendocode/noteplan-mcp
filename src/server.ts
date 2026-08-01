@@ -33,7 +33,7 @@ import { parseFlexibleDate } from './utils/date-utils.js';
 import { upgradeMessage, getNotePlanVersion, getMcpServerVersion, MIN_BUILD_ADVANCED_FEATURES, MIN_BUILD_CREATE_BACKUP } from './utils/version.js';
 import { isReadOnly, isSkipDryRun, shouldAutoLaunchNotePlan } from './utils/server-config.js';
 import { initSqlite } from './noteplan/sqlite-loader.js';
-import { getDatabase, getDatabasePath, listSpaces as listSpacesFromDb } from './noteplan/sqlite-reader.js';
+import { listSpaces as listSpacesFromDb } from './noteplan/sqlite-reader.js';
 import { primeConfigFromBridge } from './noteplan/file-reader.js';
 import { primePreferencesFromBridge } from './noteplan/preferences.js';
 import { getBridgeClient } from './transport/bridge-availability.js';
@@ -1036,17 +1036,18 @@ export function createServer(): Server {
   }
   console.error(`[noteplan-mcp] Detected NotePlan ${versionInfo.version} (build ${versionInfo.build}, source: ${versionInfo.source}). Advanced features: ${advancedFeaturesEnabled ? 'enabled' : 'disabled'}.`);
 
-  // Startup diagnostics: HOME, database, spaces.
+  // Startup diagnostics: HOME, spaces.
   //
   // Prefer the HTTP bridge for space data. The bridge talks to the running
   // NotePlan app, which already owns the teamspace database — so when it is
-  // available we must NOT open teamspace.db ourselves. getDatabasePath()
+  // available we must NOT open teamspace.db ourselves. When the bridge is
+  // unavailable, do NOT touch the container here either: getDatabasePath()
   // (fs.existsSync) and getDatabase() (opens the SQLite file read-write)
-  // reach directly into NotePlan's container, which triggers a macOS Files &
-  // Folders (TCC) prompt on every launch, even when the server is idle. Only
-  // fall back to the direct SQLite open when the bridge is unavailable
-  // (NotePlan closed, old build, or Automation denied). This mirrors the
-  // bridge-first policy that bridgeOrFallback() already enforces at runtime.
+  // reach directly into NotePlan's container, and on macOS 15+ that fires the
+  // "access data from other apps" (TCC) prompt — whose "Allow Once" answer
+  // never persists, so users who launch Claude before NotePlan get re-prompted
+  // on every launch just to produce a diagnostics log line. Space access
+  // resolves lazily via bridgeOrFallback() on the first space tool call.
   console.error(`[noteplan-mcp] HOME: ${process.env.HOME ?? '(unset)'}`);
   void (async () => {
     const bridge = await getBridgeClient().catch(() => null);
@@ -1062,21 +1063,7 @@ export function createServer(): Server {
       return;
     }
 
-    // Bridge unavailable — fall back to reading the local teamspace.db.
-    const dbPath = getDatabasePath();
-    if (dbPath) {
-      const database = getDatabase();
-      const writable = database ? 'read-write' : 'unavailable';
-      console.error(`[noteplan-mcp] Space database: ${dbPath} (${writable})`);
-      try {
-        const spaces = await listSpacesFromDb();
-        console.error(`[noteplan-mcp] Spaces discovered: ${spaces.length}`);
-      } catch (err) {
-        console.error('[noteplan-mcp] Failed to list spaces:', err);
-      }
-    } else {
-      console.error('[noteplan-mcp] Space database: not found');
-    }
+    console.error('[noteplan-mcp] Bridge unavailable — space database check deferred until first space access (avoids container TCC prompt)');
   })();
 
   // Log environment configuration
