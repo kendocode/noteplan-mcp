@@ -1491,11 +1491,11 @@ export function createServer(): Server {
               },
               dryRun: {
                 type: 'boolean',
-                description: 'Preview impact and get confirmationToken — used by delete_lines. Rejected with ERR_UNSUPPORTED_PARAM on the other actions, which have no dryRun implementation',
+                description: 'Preview the change and get a confirmationToken without writing — supported by all five actions. delete_lines REQUIRES a token to execute; insert, append, edit_line and replace_lines still write in one call when dryRun is not set',
               },
               confirmationToken: {
                 type: 'string',
-                description: 'Token from dryRun — used by delete_lines',
+                description: 'Token from dryRun. Required by delete_lines; optional for insert, append, edit_line and replace_lines, and validated against the exact target it was issued for when supplied',
               },
               allowEmptyContent: {
                 type: 'boolean',

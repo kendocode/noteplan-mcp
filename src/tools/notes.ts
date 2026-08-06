@@ -320,6 +320,126 @@ function buildAttachmentWarningMessage(referenceCount: number): string {
   return `Warning: edited/deleted content references ${referenceCount} attachment link(s). NotePlan may auto-trash referenced files when these links are removed.`;
 }
 
+const CHANGE_PREVIEW_LIMIT = 20;
+
+export interface LineChangeSummary {
+  /** First 1-indexed line that differs, or null when the edit is a no-op. */
+  firstChangedLine: number | null;
+  removedLineCount: number;
+  addedLineCount: number;
+  removedLines: Array<{ line: number; content: string }>;
+  addedLines: Array<{ line: number; content: string }>;
+  previewTruncated: boolean;
+}
+
+/**
+ * Describe what an edit would change, by comparing the note before and after.
+ *
+ * Trims the identical head and tail so the preview shows only the affected
+ * region, which is what makes one summary usable for insert, append, edit_line
+ * and replace_lines alike instead of four bespoke previews.
+ */
+export function summarizeLineChanges(
+  before: string,
+  after: string,
+  limit = CHANGE_PREVIEW_LIMIT
+): LineChangeSummary {
+  const beforeLines = before.split('\n');
+  const afterLines = after.split('\n');
+
+  let start = 0;
+  while (
+    start < beforeLines.length &&
+    start < afterLines.length &&
+    beforeLines[start] === afterLines[start]
+  ) {
+    start += 1;
+  }
+
+  let beforeEnd = beforeLines.length;
+  let afterEnd = afterLines.length;
+  while (
+    beforeEnd > start &&
+    afterEnd > start &&
+    beforeLines[beforeEnd - 1] === afterLines[afterEnd - 1]
+  ) {
+    beforeEnd -= 1;
+    afterEnd -= 1;
+  }
+
+  const removed = beforeLines.slice(start, beforeEnd);
+  const added = afterLines.slice(start, afterEnd);
+  const changed = removed.length > 0 || added.length > 0;
+
+  return {
+    firstChangedLine: changed ? start + 1 : null,
+    removedLineCount: removed.length,
+    addedLineCount: added.length,
+    removedLines: removed.slice(0, limit).map((content, i) => ({ line: start + 1 + i, content })),
+    addedLines: added.slice(0, limit).map((content, i) => ({ line: start + 1 + i, content })),
+    previewTruncated: removed.length > limit || added.length > limit,
+  };
+}
+
+type LineEditGate =
+  | { kind: 'preview'; result: Record<string, unknown> }
+  | { kind: 'blocked'; result: Record<string, unknown> }
+  | { kind: 'proceed' };
+
+/**
+ * dryRun/confirmationToken handling for the content-editing actions.
+ *
+ * Deliberately weaker than the delete/move/rename flow: those actions REQUIRE a
+ * token, while insert, append, edit_line and replace_lines still write in a
+ * single call when no dryRun is requested. Requiring confirmation here would
+ * double the round-trips for every ordinary edit. `dryRun: true` returns a
+ * preview and a token; a token, if one is supplied, is validated.
+ */
+function gateLineEdit(options: {
+  tool: string;
+  action: string;
+  target: string;
+  params: { dryRun?: unknown; confirmationToken?: unknown };
+  before: string;
+  after: string;
+  message: string;
+  extra?: Record<string, unknown>;
+}): LineEditGate {
+  const { tool, action, target, params, before, after, message, extra } = options;
+  const context = { tool, target, action };
+
+  if (isTrueBool(params.dryRun)) {
+    return {
+      kind: 'preview',
+      result: {
+        success: true,
+        dryRun: true,
+        message,
+        ...summarizeLineChanges(before, after),
+        ...extra,
+        ...issueConfirmationToken(context),
+      },
+    };
+  }
+
+  const token = params.confirmationToken;
+  const hasToken = typeof token === 'string' && token.trim().length > 0;
+  if (hasToken) {
+    const confirmation = validateAndConsumeConfirmationToken(token, context);
+    if (!confirmation.ok) {
+      return {
+        kind: 'blocked',
+        result: {
+          success: false,
+          error: confirmationFailureMessage(tool, confirmation.reason),
+        },
+      };
+    }
+  }
+
+  return { kind: 'proceed' };
+}
+
 function findParagraphBounds(lines: string[], lineIndex: number): { startIndex: number; endIndex: number } {
   let startIndex = lineIndex;
   while (startIndex > 0 && lines[startIndex - 1].trim() !== '') {
@@ -1873,6 +1993,14 @@ export const insertContentSchema = z.object({
     .max(10)
     .optional()
     .describe('Tab indentation level for task/checklist/bullet lines'),
+  dryRun: z
+    .boolean()
+    .optional()
+    .describe('Preview the change and get a confirmationToken without writing (default: false)'),
+  confirmationToken: z
+    .string()
+    .optional()
+    .describe('Token issued by dryRun. Optional — this action writes in one call without it'),
 }).superRefine((input, ctx) => {
   if (!input.id && !input.filename && !input.title && !input.date && !input.query) {
     ctx.addIssue({
@@ -1897,6 +2025,14 @@ export const appendContentSchema = z.object({
     .optional()
     .default('tabs')
     .describe('Indentation normalization for appended list/task lines. Default: tabs'),
+  dryRun: z
+    .boolean()
+    .optional()
+    .describe('Preview the change and get a confirmationToken without writing (default: false)'),
+  confirmationToken: z
+    .string()
+    .optional()
+    .describe('Token issued by dryRun. Optional — this action writes in one call without it'),
 }).superRefine((input, ctx) => {
   if (!input.id && !input.filename && !input.title && !input.date && !input.query) {
     ctx.addIssue({
@@ -1943,6 +2079,14 @@ export const editLineSchema = z.object({
     .boolean()
     .optional()
     .describe('Allow replacing line content with empty/blank text (default: false)'),
+  dryRun: z
+    .boolean()
+    .optional()
+    .describe('Preview the change and get a confirmationToken without writing (default: false)'),
+  confirmationToken: z
+    .string()
+    .optional()
+    .describe('Token issued by dryRun. Optional — this action writes in one call without it'),
 });
 
 export const replaceLinesSchema = z.object({
@@ -1959,6 +2103,14 @@ export const replaceLinesSchema = z.object({
     .boolean()
     .optional()
     .describe('Allow replacing selected lines with empty content (default: false). Prefer delete_lines for pure deletion.'),
+  dryRun: z
+    .boolean()
+    .optional()
+    .describe('Preview the change and get a confirmationToken without writing (default: false)'),
+  confirmationToken: z
+    .string()
+    .optional()
+    .describe('Token issued by dryRun. Optional — this action writes in one call without it'),
 });
 
 // Granular note operation implementations
@@ -2077,6 +2229,18 @@ export async function insertContent(params: z.infer<typeof insertContentSchema>)
       heading: params.heading,
       line: params.line,
     });
+    const gate = gateLineEdit({
+      tool: 'noteplan_edit_content',
+      action: 'insert',
+      target: `${note.filename}:${params.position}${params.line !== undefined ? `:${params.line}` : ''}`,
+      params,
+      before: note.content,
+      after: newContent,
+      message: `Dry run: content would be inserted at ${params.position}`,
+      extra: { indentationStyle, linesRetabbed: normalized.linesRetabbed },
+    });
+    if (gate.kind !== 'proceed') return gate.result;
+
     const writeTarget = getWritableIdentifier(note);
     await store.updateNote(writeTarget.identifier, newContent, {
       source: writeTarget.source,
@@ -2122,6 +2286,19 @@ export async function appendContent(params: z.infer<typeof appendContentSchema>)
       position: 'end',
       heading: params.heading,
     });
+
+    const gate = gateLineEdit({
+      tool: 'noteplan_edit_content',
+      action: 'append',
+      target: `${note.filename}:end${params.heading ? `:${params.heading}` : ''}`,
+      params,
+      before: note.content,
+      after: newContent,
+      message: 'Dry run: content would be appended',
+      extra: { indentationStyle, linesRetabbed: normalized.linesRetabbed },
+    });
+    if (gate.kind !== 'proceed') return gate.result;
+
     const writeTarget = getWritableIdentifier(note);
     await store.updateNote(writeTarget.identifier, newContent, {
       source: writeTarget.source,
@@ -2334,6 +2511,25 @@ export async function editLine(params: z.infer<typeof editLineSchema>) {
       warnings.push(buildAttachmentWarningMessage(removedAttachmentReferences.length));
     }
 
+    const gate = gateLineEdit({
+      tool: 'noteplan_edit_content',
+      action: 'edit_line',
+      target: `${note.filename}:${params.line}`,
+      params,
+      before: note.content,
+      after: newContent,
+      message: `Dry run: line ${params.line} would be updated`,
+      extra: {
+        originalLine,
+        newLine: normalized.content,
+        indentationStyle,
+        linesRetabbed: normalized.linesRetabbed,
+        lineDelta,
+        warnings: warnings.length > 0 ? warnings : undefined,
+      },
+    });
+    if (gate.kind !== 'proceed') return gate.result;
+
     const writeIdentifier = note.source === 'space' ? (note.id || note.filename) : note.filename;
     await store.updateNote(writeIdentifier, newContent, { source: note.source });
 
@@ -2437,8 +2633,28 @@ export async function replaceLines(params: z.infer<typeof replaceLinesSchema>) {
     }
 
     allLines.splice(startIndex, lineCountToReplace, ...replacementLines);
+    const replacedContent = allLines.join('\n');
+
+    const gate = gateLineEdit({
+      tool: 'noteplan_edit_content',
+      action: 'replace_lines',
+      target: `${note.filename}:${boundedStartLine}-${boundedEndLine}`,
+      params,
+      before: note.content,
+      after: replacedContent,
+      message: `Dry run: lines ${boundedStartLine}-${boundedEndLine} would be replaced`,
+      extra: {
+        lineCountToReplace,
+        insertedLineCount: replacementLines.length,
+        lineDelta,
+        indentationStyle,
+        warnings: warnings.length > 0 ? warnings : undefined,
+      },
+    });
+    if (gate.kind !== 'proceed') return gate.result;
+
     const writeIdentifier = note.source === 'space' ? (note.id || note.filename) : note.filename;
-    await store.updateNote(writeIdentifier, allLines.join('\n'), { source: note.source });
+    await store.updateNote(writeIdentifier, replacedContent, { source: note.source });
 
     return {
       success: true,

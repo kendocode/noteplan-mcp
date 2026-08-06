@@ -58,51 +58,59 @@ describe('schemaKeys', () => {
     expect(schemaKeys(z.string())).toEqual([]);
   });
 
-  it('finds dryRun on the actions that implement it, and not on the others', () => {
-    expect(schemaKeys(deleteLinesSchema)).toContain('dryRun');
-    // delete_lines is the ONLY edit_content action with a dryRun implementation.
-    // The tool's JSON schema used to advertise replace_lines as well; it has
-    // neither the schema field nor any read of it. If one is added, this test
-    // fails and the tool description needs updating with it.
-    expect(schemaKeys(replaceLinesSchema)).not.toContain('dryRun');
-    expect(schemaKeys(editLineSchema)).not.toContain('dryRun');
-    expect(schemaKeys(insertContentSchema)).not.toContain('dryRun');
-    expect(schemaKeys(appendContentSchema)).not.toContain('dryRun');
+  it('finds dryRun on every action that implements it', () => {
+    // All five edit_content actions implement dryRun. The guard reads that from
+    // the schemas, so an action losing its implementation would start refusing
+    // the parameter rather than silently ignoring it again.
+    for (const schema of [
+      deleteLinesSchema,
+      replaceLinesSchema,
+      editLineSchema,
+      insertContentSchema,
+      appendContentSchema,
+    ]) {
+      expect(schemaKeys(schema)).toContain('dryRun');
+      expect(schemaKeys(schema)).toContain('confirmationToken');
+    }
   });
 });
 
 describe('checkApplicableParams — dryRun safety', () => {
-  it('refuses dryRun on edit_line instead of writing anyway', () => {
-    const result = check('edit_line', { id: 'n1', line: 4, content: 'x', dryRun: true });
-
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.code).toBe(ERR_UNSUPPORTED_PARAM);
-    expect(result.unsupported).toEqual(['dryRun']);
-    // The message has to point at the action that does honour it.
-    expect(result.error).toContain('delete_lines');
-  });
-
-  it('refuses dryRun on insert, append and replace_lines too', () => {
-    expect(check('insert', { id: 'n1', content: 'x', position: 'end', dryRun: true }).ok).toBe(false);
-    expect(check('append', { id: 'n1', content: 'x', dryRun: true }).ok).toBe(false);
+  it('accepts dryRun on every action that implements it', () => {
+    expect(check('delete_lines', { id: 'n1', startLine: 1, endLine: 2, dryRun: true }).ok).toBe(true);
+    expect(check('edit_line', { id: 'n1', line: 4, content: 'x', dryRun: true }).ok).toBe(true);
+    expect(check('insert', { id: 'n1', content: 'x', position: 'end', dryRun: true }).ok).toBe(true);
+    expect(check('append', { id: 'n1', content: 'x', dryRun: true }).ok).toBe(true);
     expect(check('replace_lines', {
       id: 'n1',
       startLine: 1,
       endLine: 2,
       content: 'x',
       dryRun: true,
-    }).ok).toBe(false);
+    }).ok).toBe(true);
   });
 
-  it('accepts dryRun on delete_lines, which implements it', () => {
-    expect(check('delete_lines', { id: 'n1', startLine: 1, endLine: 2, dryRun: true }).ok).toBe(true);
+  it('accepts confirmationToken wherever dryRun is accepted', () => {
+    expect(check('edit_line', { id: 'n1', line: 4, content: 'x', confirmationToken: 'tok' }).ok).toBe(true);
     expect(check('delete_lines', {
       id: 'n1',
       startLine: 1,
       endLine: 2,
       confirmationToken: 'tok',
     }).ok).toBe(true);
+  });
+
+  it('still refuses a safety flag on an action that never implemented one', () => {
+    // startLine belongs to the range actions only; passing it to edit_line was
+    // accepted and dropped before the check existed.
+    const result = check('edit_line', { id: 'n1', line: 4, content: 'x', startLine: 2 });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe(ERR_UNSUPPORTED_PARAM);
+    expect(result.unsupported).toEqual(['startLine']);
+    expect(result.error).toContain('delete_lines');
+    expect(result.error).toContain('replace_lines');
   });
 });
 
