@@ -1,6 +1,6 @@
 // SQLite writer for space notes
 
-import { getDatabase, listSpaces } from './sqlite-reader.js';
+import { getDatabase, listSpaces, reloadDatabase } from './sqlite-reader.js';
 import { SQLITE_NOTE_TYPES } from './types.js';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -74,13 +74,8 @@ function queueMcpChange(database: OpenDatabase, noteId: string, oldParent?: stri
   console.error(`[noteplan-mcp] Queued mcp_change for note_id=${noteId}${oldParent ? ` (old_parent=${oldParent})` : ''}`);
 }
 
-function getSpaceNode(identifier: string): SpaceNodeRow {
-  const database = getDatabase();
-  if (!database) {
-    throw new Error('Space database not available');
-  }
-
-  const row = database
+function querySpaceNode(database: OpenDatabase, identifier: string): SpaceNodeRow | undefined {
+  return database
     .prepare(
       `
       SELECT id, filename, parent, is_dir, title
@@ -89,6 +84,29 @@ function getSpaceNode(identifier: string): SpaceNodeRow {
     `
     )
     .get(identifier, identifier) as SpaceNodeRow | undefined;
+}
+
+function getSpaceNode(identifier: string): SpaceNodeRow {
+  const database = getDatabase();
+  if (!database) {
+    throw new Error('Space database not available');
+  }
+
+  let row = querySpaceNode(database, identifier);
+
+  if (!row) {
+    // The writer queries an in-memory image of the database taken when this
+    // process opened it. Notes NotePlan created since then are missing from
+    // that image even though the bridge-backed read path returns them fine —
+    // which is why a note can be readable by id and unwritable by the same id
+    // until the server restarts. Refresh once from disk before believing the
+    // miss. This runs only on what was previously an unconditional throw, so
+    // the hit path is unchanged.
+    const reloaded = reloadDatabase();
+    if (reloaded) {
+      row = querySpaceNode(reloaded, identifier);
+    }
+  }
 
   if (!row) {
     throw new Error(`Note not found: ${identifier}`);

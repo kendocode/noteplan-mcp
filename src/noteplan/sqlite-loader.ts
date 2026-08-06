@@ -117,10 +117,18 @@ export function isSqliteAvailable(): boolean {
 
 class PreparedStatement {
   constructor(
-    private db: SqlJsInternalDb,
     private sql: string,
     private parentDb: SqliteDatabase,
   ) {}
+
+  /**
+   * Resolved on every use rather than captured at construction, so a statement
+   * created before SqliteDatabase.reload() still targets the live in-memory
+   * image instead of the freed one.
+   */
+  private get db(): SqlJsInternalDb {
+    return this.parentDb.getInternalDb();
+  }
 
   all(...params: unknown[]): Record<string, unknown>[] {
     const stmt = this.db.prepare(this.sql);
@@ -220,6 +228,11 @@ export class SqliteDatabase {
     }
   }
 
+  /** @internal Live sql.js handle; swapped wholesale by reload(). */
+  getInternalDb(): SqlJsInternalDb {
+    return this.db;
+  }
+
   getFilePath(): string | null {
     return this.filePath;
   }
@@ -233,7 +246,38 @@ export class SqliteDatabase {
   }
 
   prepare(sql: string): PreparedStatement {
-    return new PreparedStatement(this.db, sql, this);
+    return new PreparedStatement(sql, this);
+  }
+
+  /**
+   * Re-read the database file into a fresh in-memory image.
+   *
+   * sql.js loads the whole file once, at construction, so rows the host app
+   * writes afterwards are invisible for the lifetime of the process. Reloading
+   * in place — rather than constructing a replacement SqliteDatabase — keeps
+   * every existing reference to this object valid.
+   *
+   * No-op while a transaction is open (swapping the image would discard it)
+   * or if the file has gone away; the current image is left intact in both
+   * cases.
+   */
+  reload(): void {
+    if (!SQL) {
+      throw new Error('sql.js not initialized. Call initSqlite() first.');
+    }
+    if (this.inTransaction) return;
+    if (!this.filePath || !fs.existsSync(this.filePath)) return;
+
+    checkpointWal(this.filePath);
+    const buffer = fs.readFileSync(this.filePath);
+    const fresh = new SQL.Database(buffer);
+    const previous = this.db;
+    this.db = fresh;
+    try {
+      previous.close();
+    } catch {
+      // Freeing the old image is best-effort; the fresh one is already live.
+    }
   }
 
   exec(sql: string): void {

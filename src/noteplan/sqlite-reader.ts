@@ -103,6 +103,25 @@ export function closeDatabase(): void {
     db.close();
     db = null;
   }
+  // Clear the "already looked" latch too. Without this, getDatabase() sees
+  // dbChecked === true with db === null and returns null forever, so nothing
+  // can reopen the database after a close.
+  dbChecked = false;
+}
+
+/**
+ * Refresh the in-memory snapshot from disk and return the (same) handle.
+ *
+ * The database is read into sql.js once, when it is opened, so rows NotePlan
+ * creates afterwards are invisible to this process for its whole lifetime.
+ * Call this before concluding that a note does not exist. The refresh happens
+ * in place, so handles callers already hold stay valid.
+ */
+export function reloadDatabase(): SqliteDatabase | null {
+  const database = getDatabase();
+  if (!database) return null;
+  database.reload();
+  return database;
 }
 
 export async function listSpaces(): Promise<Space[]> {

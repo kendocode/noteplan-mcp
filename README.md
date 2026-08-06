@@ -250,7 +250,7 @@ The server automatically detects NotePlan's storage location. Supported paths (i
 ## How It Works
 
 - **Local notes**: Direct file system read/write. NotePlan auto-detects changes via FolderMonitor (~300ms delay)
-- **Teamspace notes**: SQLite queries/updates. NotePlan sees changes on next sync cycle or app restart
+- **Teamspace notes**: SQLite queries/updates. NotePlan sees changes on next sync cycle or app restart. The database is read into memory when the server first opens it, so write paths refresh that image from disk before reporting a note as missing — notes NotePlan created after server start stay writable
 - **Calendar & Reminders**: Native macOS access via compiled Swift helpers using EventKit
 - **UI control & Plugins**: AppleScript bridge to the running NotePlan app
 
