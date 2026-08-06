@@ -100,3 +100,53 @@ describe('insertContent — block structure', () => {
     expect(writtenContent()).toContain('* [ ] First\n* [ ] Second');
   });
 });
+
+describe('insertContent — caller params are not mutated', () => {
+  beforeEach(() => {
+    updateNote.mockClear();
+    getNote.mockReset();
+    getNote.mockResolvedValue(NOTE);
+  });
+
+  it('leaves the params object exactly as the caller passed it', async () => {
+    const params = {
+      id: NOTE.id,
+      content: '* [x] Something already done',
+      position: 'start',
+      line: 3,
+    };
+    const before = JSON.parse(JSON.stringify(params));
+
+    await insertContent(params as Parameters<typeof insertContent>[0]);
+
+    // insertContent used to write its auto-corrections (position, type,
+    // taskStatus) back into the caller's object.
+    expect(params).toEqual(before);
+  });
+
+  it('works on a frozen params object', async () => {
+    const params = Object.freeze({
+      id: NOTE.id,
+      content: '+ a checklist item',
+      position: 'start',
+      line: 2,
+    });
+
+    const result = await insertContent(params as Parameters<typeof insertContent>[0]);
+
+    expect(result.success).toBe(true);
+  });
+
+  it('still applies the position auto-correction it used to mutate in', async () => {
+    const result = await insertContent({
+      id: NOTE.id,
+      content: 'inserted line',
+      position: 'start',
+      line: 3,
+    } as Parameters<typeof insertContent>[0]);
+
+    // line was supplied, so the insert happens at that line, not at the start.
+    expect(result.message).toContain('at-line');
+    expect(writtenContent().split('\n')[2]).toBe('inserted line');
+  });
+});

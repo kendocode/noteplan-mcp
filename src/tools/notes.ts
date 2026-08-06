@@ -2025,49 +2025,50 @@ export async function insertContent(params: z.infer<typeof insertContentSchema>)
     const indentationStyle = normalizeIndentationStyle(
       (params as { indentationStyle?: unknown }).indentationStyle
     );
-    let contentToInsert = params.content;
+    const contentToInsert = params.content;
     // Auto-correct position when line number is provided but position is wrong
     // Catches LLMs sending { position: "start", line: 5 } instead of { position: "at-line", line: 5 }
-    if (params.line !== undefined && params.position !== 'at-line') {
-      params.position = 'at-line';
-    }
+    const position = params.line !== undefined && params.position !== 'at-line'
+      ? 'at-line'
+      : params.position;
     // Auto-detect raw task/checklist markdown when type is not explicitly set
     // Catches LLMs sending "- [ ] Buy groceries", "* [x] Done", "* Buy groceries", "+ Item" without proper type
-    if (!params.type && /^[\t ]*[*+\-]\s+/.test(contentToInsert)) {
+    let type = params.type as ParagraphType | undefined;
+    let taskStatus = (params.taskStatus as ParagraphTaskStatus) ?? undefined;
+    if (!type && /^[\t ]*[*+\-]\s+/.test(contentToInsert)) {
       // Determine type from the marker character
       const markerMatch = contentToInsert.match(/^[\t ]*([*+\-])\s+/);
       const markerChar = markerMatch?.[1];
 
       if (markerChar === '+') {
-        params.type = 'checklist';
+        type = 'checklist';
       } else if (markerChar === '*') {
-        params.type = 'task';
+        type = 'task';
       } else if (markerChar === '-' && /^[\t ]*-\s+\[[ x\->]\]\s+/.test(contentToInsert)) {
         // Dash with checkbox is clearly a task (plain "- text" could be a bullet, so only match with checkbox)
-        params.type = 'task';
+        type = 'task';
       }
 
       // Detect status from the checkbox marker if present
-      if (params.type) {
+      if (type) {
         const statusMatch = contentToInsert.match(/\[(.)\]/);
         if (statusMatch) {
           const marker = statusMatch[1];
-          if (marker === 'x') params.taskStatus = 'done';
-          else if (marker === '-') params.taskStatus = 'cancelled';
-          else if (marker === '>') params.taskStatus = 'scheduled';
+          if (marker === 'x') taskStatus = 'done';
+          else if (marker === '-') taskStatus = 'cancelled';
+          else if (marker === '>') taskStatus = 'scheduled';
         }
       }
     }
-    const block = buildParagraphBlock(contentToInsert, params.type as ParagraphType | undefined, {
+    const block = buildParagraphBlock(contentToInsert, type, {
       headingLevel: params.headingLevel,
-      taskStatus: (params.taskStatus as ParagraphTaskStatus) ?? undefined,
+      taskStatus,
       indentLevel: params.indentLevel,
       priority: params.priority,
     });
-    contentToInsert = block.content;
-    const normalized = normalizeContentIndentation(contentToInsert, indentationStyle);
+    const normalized = normalizeContentIndentation(block.content, indentationStyle);
     const newContent = frontmatter.insertContentAtPosition(note.content, normalized.content, {
-      position: params.position,
+      position,
       heading: params.heading,
       line: params.line,
     });
@@ -2079,7 +2080,7 @@ export async function insertContent(params: z.infer<typeof insertContentSchema>)
     return {
       success: true,
       tip: 'Use noteplan_paragraphs(action: "get") to inspect line numbers and content before making further edits.',
-      message: `Content inserted at ${params.position}`,
+      message: `Content inserted at ${position}`,
       note: {
         id: note.id,
         title: note.title,
