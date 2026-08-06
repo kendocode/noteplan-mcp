@@ -26,6 +26,7 @@ import {
   extractHeadings,
   parseParagraphLine,
   buildParagraphLine,
+  buildParagraphBlock,
   stripRawMarkers,
   filterTasksByStatus,
 } from './markdown-parser.js';
@@ -1211,5 +1212,106 @@ describe('updateTaskContent – frontmatter line number regression', () => {
     expect(lines[taskB.lineIndex]).toBe('* [ ] Updated B');
     expect(lines[0]).toBe('---');
     expect(lines[2]).toBe('---');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildParagraphBlock
+// ---------------------------------------------------------------------------
+describe('buildParagraphBlock', () => {
+  it('returns content untouched when no type is in effect', () => {
+    const block = '\t- one\n\t- two';
+    const result = buildParagraphBlock(block, undefined);
+
+    expect(result.content).toBe(block);
+    expect(result.appliedType).toBeNull();
+    expect(result.linesReformatted).toBe(0);
+  });
+
+  it('applies the type to a single line, as before', () => {
+    const result = buildParagraphBlock('Buy milk', 'task');
+
+    expect(result.content).toBe('* [ ] Buy milk');
+    expect(result.appliedType).toBe('task');
+    expect(result.linesReformatted).toBe(1);
+  });
+
+  it('applies the type to every plain line of a multi-line block', () => {
+    const result = buildParagraphBlock('First\nSecond', 'task');
+
+    expect(result.content).toBe('* [ ] First\n* [ ] Second');
+    expect(result.linesReformatted).toBe(2);
+    expect(result.linesPreserved).toBe(0);
+  });
+
+  it('keeps indented "- " children as bullets under a task parent', () => {
+    // The reported defect: one detected type was applied to every line, so the
+    // indented informational bullets were flattened into top-level open tasks.
+    const block = '* Parent task\n\t- child detail\n\t- another detail';
+    const result = buildParagraphBlock(block, 'task');
+
+    const lines = result.content.split('\n');
+    expect(lines[1]).toBe('\t- child detail');
+    expect(lines[2]).toBe('\t- another detail');
+    expect(result.linesPreserved).toBe(3);
+  });
+
+  it('preserves indentation depth rather than flattening to indentLevel', () => {
+    const block = '* Parent\n\t- one\n\t\t- deeper';
+    const result = buildParagraphBlock(block, 'task', { indentLevel: 0 });
+
+    expect(result.content.split('\n')[2]).toBe('\t\t- deeper');
+  });
+
+  it('preserves each line\'s own marker and checkbox state', () => {
+    const block = '* [x] Done parent\n\t+ [ ] a checklist child\n\t- a bullet child';
+    const result = buildParagraphBlock(block, 'task');
+
+    expect(result.content.split('\n')).toEqual([
+      '* [x] Done parent',
+      '\t+ [ ] a checklist child',
+      '\t- a bullet child',
+    ]);
+    expect(result.linesReformatted).toBe(0);
+  });
+
+  it('leaves blank lines blank instead of turning them into empty tasks', () => {
+    const result = buildParagraphBlock('First\n\nSecond', 'task');
+
+    expect(result.content.split('\n')[1]).toBe('');
+  });
+
+  it('leaves headings, quotes and ordered list items alone', () => {
+    const block = 'Intro line\n## A heading\n> a quote\n1. ordered item';
+    const result = buildParagraphBlock(block, 'bullet');
+
+    expect(result.content.split('\n')).toEqual([
+      '- Intro line',
+      '## A heading',
+      '> a quote',
+      '1. ordered item',
+    ]);
+    expect(result.linesReformatted).toBe(1);
+  });
+
+  it('formats plain lines mixed in among structured ones', () => {
+    const block = '* Parent\n\t- child\nloose line';
+    const result = buildParagraphBlock(block, 'task');
+
+    expect(result.content.split('\n')).toEqual([
+      // A marker keeps its own type; only its checkbox style is normalised to
+      // the user's task-marker preference, exactly as a single-line insert is.
+      '* [ ] Parent',
+      '\t- child',
+      '* [ ] loose line',
+    ]);
+    expect(result.linesReformatted).toBe(2);
+    expect(result.linesPreserved).toBe(2);
+  });
+
+  it('never adds a checkbox to a line that is a plain bullet', () => {
+    const result = buildParagraphBlock('* Parent\n\t- child\n\t- second', 'task');
+
+    expect(result.content.split('\n').slice(1)).toEqual(['\t- child', '\t- second']);
   });
 });

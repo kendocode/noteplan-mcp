@@ -1404,7 +1404,7 @@ export function createServer(): Server {
               type: {
                 type: 'string',
                 enum: ['title', 'heading', 'task', 'checklist', 'bullet', 'quote', 'separator', 'empty', 'text'],
-                description: 'Paragraph type for auto-formatting — used by insert',
+                description: 'Paragraph type for auto-formatting — used by insert. In a multi-line block it applies only to lines that carry no marker of their own; lines that already start with a list marker, heading, quote or ordered-list number keep their own structure and indentation. The response reports what was rewritten under contentFormatting.',
               },
               taskStatus: {
                 type: 'string',

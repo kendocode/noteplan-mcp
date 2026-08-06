@@ -9,7 +9,7 @@ import {
   issueConfirmationToken,
   validateAndConsumeConfirmationToken,
 } from '../utils/confirmation-tokens.js';
-import { parseParagraphLine, parseAllParagraphLines, buildParagraphLine, stripRawMarkers } from '../noteplan/markdown-parser.js';
+import { parseParagraphLine, parseAllParagraphLines, buildParagraphBlock, stripRawMarkers } from '../noteplan/markdown-parser.js';
 import { NoteType, ParagraphType, ParagraphMetadata, TaskStatus as ParagraphTaskStatus } from '../noteplan/types.js';
 import { normalizeFilename } from '../utils/filename-normalize.js';
 import { normalizePeriodicTitle, isCanonicalPeriodicTitle, parseFlexibleDate } from '../utils/date-utils.js';
@@ -1850,11 +1850,11 @@ export const insertContentSchema = z.object({
   type: z
     .enum(['title', 'heading', 'task', 'checklist', 'bullet', 'quote', 'separator', 'empty', 'text'])
     .optional()
-    .describe('Paragraph type — when set, content is auto-formatted with correct markdown markers'),
+    .describe('Paragraph type — when set, content is auto-formatted with correct markdown markers. For multi-line content it applies only to lines with no marker of their own; lines that already carry one keep their marker and indentation'),
   taskStatus: z
     .enum(['open', 'done', 'cancelled', 'scheduled'])
     .optional()
-    .describe('Task/checklist status (default: open). Only used when type is task or checklist'),
+    .describe('Task/checklist status (default: open). Only used when type is task or checklist, and only for lines the type is applied to'),
   headingLevel: z
     .number()
     .min(1)
@@ -1872,7 +1872,7 @@ export const insertContentSchema = z.object({
     .min(0)
     .max(10)
     .optional()
-    .describe('Tab indentation level for task/checklist/bullet lines'),
+    .describe('Tab indentation level for task/checklist/bullet lines. Applies to lines the type is applied to; lines with their own marker keep their own depth'),
 }).superRefine((input, ctx) => {
   if (!input.id && !input.filename && !input.title && !input.date && !input.query) {
     ctx.addIssue({
@@ -2025,55 +2025,50 @@ export async function insertContent(params: z.infer<typeof insertContentSchema>)
     const indentationStyle = normalizeIndentationStyle(
       (params as { indentationStyle?: unknown }).indentationStyle
     );
-    let contentToInsert = params.content;
+    const contentToInsert = params.content;
     // Auto-correct position when line number is provided but position is wrong
     // Catches LLMs sending { position: "start", line: 5 } instead of { position: "at-line", line: 5 }
-    if (params.line !== undefined && params.position !== 'at-line') {
-      params.position = 'at-line';
-    }
+    const position = params.line !== undefined && params.position !== 'at-line'
+      ? 'at-line'
+      : params.position;
     // Auto-detect raw task/checklist markdown when type is not explicitly set
     // Catches LLMs sending "- [ ] Buy groceries", "* [x] Done", "* Buy groceries", "+ Item" without proper type
-    if (!params.type && /^[\t ]*[*+\-]\s+/.test(contentToInsert)) {
+    let type = params.type as ParagraphType | undefined;
+    let taskStatus = (params.taskStatus as ParagraphTaskStatus) ?? undefined;
+    if (!type && /^[\t ]*[*+\-]\s+/.test(contentToInsert)) {
       // Determine type from the marker character
       const markerMatch = contentToInsert.match(/^[\t ]*([*+\-])\s+/);
       const markerChar = markerMatch?.[1];
 
       if (markerChar === '+') {
-        params.type = 'checklist';
+        type = 'checklist';
       } else if (markerChar === '*') {
-        params.type = 'task';
+        type = 'task';
       } else if (markerChar === '-' && /^[\t ]*-\s+\[[ x\->]\]\s+/.test(contentToInsert)) {
         // Dash with checkbox is clearly a task (plain "- text" could be a bullet, so only match with checkbox)
-        params.type = 'task';
+        type = 'task';
       }
 
       // Detect status from the checkbox marker if present
-      if (params.type) {
+      if (type) {
         const statusMatch = contentToInsert.match(/\[(.)\]/);
         if (statusMatch) {
           const marker = statusMatch[1];
-          if (marker === 'x') params.taskStatus = 'done';
-          else if (marker === '-') params.taskStatus = 'cancelled';
-          else if (marker === '>') params.taskStatus = 'scheduled';
+          if (marker === 'x') taskStatus = 'done';
+          else if (marker === '-') taskStatus = 'cancelled';
+          else if (marker === '>') taskStatus = 'scheduled';
         }
       }
     }
-    if (params.type) {
-      contentToInsert = contentToInsert
-        .split('\n')
-        .map((line) =>
-          buildParagraphLine(line, params.type as ParagraphType, {
-            headingLevel: params.headingLevel,
-            taskStatus: (params.taskStatus as ParagraphTaskStatus) ?? undefined,
-            indentLevel: params.indentLevel,
-            priority: params.priority,
-          })
-        )
-        .join('\n');
-    }
-    const normalized = normalizeContentIndentation(contentToInsert, indentationStyle);
+    const block = buildParagraphBlock(contentToInsert, type, {
+      headingLevel: params.headingLevel,
+      taskStatus,
+      indentLevel: params.indentLevel,
+      priority: params.priority,
+    });
+    const normalized = normalizeContentIndentation(block.content, indentationStyle);
     const newContent = frontmatter.insertContentAtPosition(note.content, normalized.content, {
-      position: params.position,
+      position,
       heading: params.heading,
       line: params.line,
     });
@@ -2085,7 +2080,7 @@ export async function insertContent(params: z.infer<typeof insertContentSchema>)
     return {
       success: true,
       tip: 'Use noteplan_paragraphs(action: "get") to inspect line numbers and content before making further edits.',
-      message: `Content inserted at ${params.position}`,
+      message: `Content inserted at ${position}`,
       note: {
         id: note.id,
         title: note.title,
@@ -2093,6 +2088,16 @@ export async function insertContent(params: z.infer<typeof insertContentSchema>)
       },
       indentationStyle,
       linesRetabbed: normalized.linesRetabbed,
+      // `indentationStyle`/`linesRetabbed` describe only the indentation pass.
+      // Type formatting is a separate, earlier transform, and it used to be
+      // reported nowhere — a caller could set indentationStyle:"preserve", read
+      // linesRetabbed:0, and still have had its markers and indentation
+      // rewritten. This says what that pass actually did.
+      contentFormatting: {
+        appliedType: block.appliedType,
+        linesReformatted: block.linesReformatted,
+        linesPreserved: block.linesPreserved,
+      },
     };
   } catch (error) {
     return {
