@@ -32,6 +32,72 @@ import * as attachmentTools from './tools/attachments.js';
 import { parseFlexibleDate } from './utils/date-utils.js';
 import { upgradeMessage, getNotePlanVersion, getMcpServerVersion, MIN_BUILD_ADVANCED_FEATURES, MIN_BUILD_CREATE_BACKUP } from './utils/version.js';
 import { isReadOnly, isSkipDryRun, shouldAutoLaunchNotePlan } from './utils/server-config.js';
+import { z } from 'zod';
+import { checkApplicableParams } from './utils/param-validation.js';
+
+// Per-action parameter schemas for the mutating tools. The tool JSON schema is a
+// flat bag shared by every action, so these are what decide whether a given key
+// actually applies to the action the caller picked; see param-validation.ts.
+const MUTATING_TOOL_SCHEMAS = {
+  noteplan_edit_content: {
+    schemas: {
+      insert: noteTools.insertContentSchema,
+      append: noteTools.appendContentSchema,
+      delete_lines: noteTools.deleteLinesSchema,
+      edit_line: noteTools.editLineSchema,
+      replace_lines: noteTools.replaceLinesSchema,
+    },
+    // `scheduleDate` is folded into `content` by the dispatcher below.
+    envelopeKeys: ['action', 'scheduleDate'],
+  },
+  noteplan_manage_note: {
+    schemas: {
+      create: noteTools.createNoteSchema,
+      update: noteTools.updateNoteSchema,
+      delete: noteTools.deleteNoteSchema,
+      move: noteTools.moveNoteSchema,
+      restore: noteTools.restoreNoteSchema,
+      rename: noteTools.renameNoteFileSchema,
+      set_property: noteTools.setPropertySchema,
+      remove_property: noteTools.removePropertySchema,
+    },
+    envelopeKeys: ['action'],
+  },
+  noteplan_paragraphs: {
+    schemas: {
+      add: taskTools.addTaskSchema,
+      complete: taskTools.completeTaskSchema,
+      update: taskTools.updateTaskSchema,
+      delete_recurring: taskTools.deleteRecurringTaskSchema,
+    },
+    // `date`/`filename` are folded into `target`, `scheduleDate` into `content`.
+    envelopeKeys: ['action', 'scheduleDate', 'date', 'filename', 'target'],
+  },
+} as const;
+
+/**
+ * Refuse a call whose parameters do not apply to its action, rather than
+ * dropping them silently. Returns an error result to hand back, or null.
+ */
+function rejectInapplicableParams(
+  tool: keyof typeof MUTATING_TOOL_SCHEMAS,
+  args: unknown,
+): { success: false; error: string; code: string } | null {
+  const bag = (args ?? {}) as Record<string, unknown>;
+  const action = typeof bag.action === 'string' ? bag.action : '';
+  if (!action) return null; // The dispatcher reports a missing/unknown action itself.
+
+  const { schemas, envelopeKeys } = MUTATING_TOOL_SCHEMAS[tool];
+  const check = checkApplicableParams({
+    tool,
+    action,
+    args: bag,
+    schemas: schemas as Record<string, z.ZodTypeAny>,
+    envelopeKeys,
+  });
+  if (check.ok) return null;
+  return { success: false, error: check.error, code: check.code };
+}
 import { initSqlite } from './noteplan/sqlite-loader.js';
 import { listSpaces as listSpacesFromDb } from './noteplan/sqlite-reader.js';
 import { primeConfigFromBridge } from './noteplan/file-reader.js';
@@ -1425,11 +1491,11 @@ export function createServer(): Server {
               },
               dryRun: {
                 type: 'boolean',
-                description: 'Preview impact and get confirmationToken — used by delete_lines, replace_lines',
+                description: 'Preview the change and get a confirmationToken without writing — supported by all five actions. delete_lines REQUIRES a token to execute; insert, append, edit_line and replace_lines still write in one call when dryRun is not set',
               },
               confirmationToken: {
                 type: 'string',
-                description: 'Token from dryRun — used by delete_lines, replace_lines',
+                description: 'Token from dryRun. Required by delete_lines; optional for insert, append, edit_line and replace_lines, and validated against the exact target it was issued for when supplied',
               },
               allowEmptyContent: {
                 type: 'boolean',
@@ -2711,6 +2777,8 @@ export function createServer(): Server {
         }
         case 'noteplan_manage_note': {
           const action = (args as any)?.action;
+          const inapplicable = rejectInapplicableParams('noteplan_manage_note', args);
+          if (inapplicable) { result = inapplicable; break; }
           const spaceWriteActions = new Set(['create', 'update', 'delete', 'move']);
           if ((args as any)?.space && spaceWriteActions.has(action) && !advancedFeaturesEnabled) {
             result = { success: false, error: upgradeMessage(`space write (${action})`), code: 'ERR_VERSION_GATE' };
@@ -2731,6 +2799,8 @@ export function createServer(): Server {
         }
         case 'noteplan_edit_content': {
           const a = args as any;
+          const inapplicable = rejectInapplicableParams('noteplan_edit_content', a);
+          if (inapplicable) { result = inapplicable; break; }
           if (a.space && !advancedFeaturesEnabled) {
             const editAction = a?.action ?? 'edit';
             result = { success: false, error: upgradeMessage(`space write (${editAction})`), code: 'ERR_VERSION_GATE' };
@@ -2752,6 +2822,8 @@ export function createServer(): Server {
         }
         case 'noteplan_paragraphs': {
           const a = args as any;
+          const inapplicable = rejectInapplicableParams('noteplan_paragraphs', a);
+          if (inapplicable) { result = inapplicable; break; }
           const paragraphWriteActions = new Set(['add', 'complete', 'update']);
           if (a.space && paragraphWriteActions.has(a.action) && !advancedFeaturesEnabled) {
             result = { success: false, error: upgradeMessage(`space write (${a.action})`), code: 'ERR_VERSION_GATE' };

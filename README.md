@@ -146,6 +146,8 @@ Then configure Claude Desktop or Claude Code to point at the local `dist/index.j
 - **Auto-Create Calendar Notes**: Editing a date that doesn't exist yet auto-creates the daily note (matches NotePlan native behavior)
 - **Smart Folder Resolution**: Exact path matching with `Notes/` prefix support; fuzzy matching only as fallback
 - **Structured Errors**: Tool failures include machine-readable `code` plus `hint`/`suggestedTool`
+- **Applicable-Parameter Checking**: The write tools (`noteplan_edit_content`, `noteplan_manage_note`, and the write actions of `noteplan_paragraphs`) share one flat parameter schema across all their actions. A parameter the chosen action does not implement is refused with `ERR_UNSUPPORTED_PARAM` naming the actions that do support it, rather than being silently dropped
+- **Preview Before Writing**: Every `noteplan_edit_content` action accepts `dryRun: true` and returns the exact lines it would remove and add, plus a `confirmationToken`. `delete_lines` requires that token to execute; `insert`, `append`, `edit_line` and `replace_lines` still write in a single call when `dryRun` is not set, and validate a token against the exact target it was issued for when one is supplied
 - **Fast Repeated Lookups**: Short-lived in-memory caching for expensive list/resolve paths
 - **Opt-in Timing Telemetry**: `debugTimings=true` adds `durationMs` and `stageTimings`
 - **Safer TeamSpace Deletes**: TeamSpace deletes move notes into `@Trash`; list/search excludes trash by default
