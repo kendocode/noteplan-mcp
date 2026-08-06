@@ -9,7 +9,7 @@ import {
   issueConfirmationToken,
   validateAndConsumeConfirmationToken,
 } from '../utils/confirmation-tokens.js';
-import { parseParagraphLine, parseAllParagraphLines, buildParagraphLine, stripRawMarkers } from '../noteplan/markdown-parser.js';
+import { parseParagraphLine, parseAllParagraphLines, buildParagraphBlock, stripRawMarkers } from '../noteplan/markdown-parser.js';
 import { NoteType, ParagraphType, ParagraphMetadata, TaskStatus as ParagraphTaskStatus } from '../noteplan/types.js';
 import { normalizeFilename } from '../utils/filename-normalize.js';
 import { normalizePeriodicTitle, isCanonicalPeriodicTitle, parseFlexibleDate } from '../utils/date-utils.js';
@@ -1850,11 +1850,11 @@ export const insertContentSchema = z.object({
   type: z
     .enum(['title', 'heading', 'task', 'checklist', 'bullet', 'quote', 'separator', 'empty', 'text'])
     .optional()
-    .describe('Paragraph type — when set, content is auto-formatted with correct markdown markers'),
+    .describe('Paragraph type — when set, content is auto-formatted with correct markdown markers. For multi-line content it applies only to lines with no marker of their own; lines that already carry one keep their marker and indentation'),
   taskStatus: z
     .enum(['open', 'done', 'cancelled', 'scheduled'])
     .optional()
-    .describe('Task/checklist status (default: open). Only used when type is task or checklist'),
+    .describe('Task/checklist status (default: open). Only used when type is task or checklist, and only for lines the type is applied to'),
   headingLevel: z
     .number()
     .min(1)
@@ -1872,7 +1872,7 @@ export const insertContentSchema = z.object({
     .min(0)
     .max(10)
     .optional()
-    .describe('Tab indentation level for task/checklist/bullet lines'),
+    .describe('Tab indentation level for task/checklist/bullet lines. Applies to lines the type is applied to; lines with their own marker keep their own depth'),
 }).superRefine((input, ctx) => {
   if (!input.id && !input.filename && !input.title && !input.date && !input.query) {
     ctx.addIssue({
@@ -2058,19 +2058,13 @@ export async function insertContent(params: z.infer<typeof insertContentSchema>)
         }
       }
     }
-    if (params.type) {
-      contentToInsert = contentToInsert
-        .split('\n')
-        .map((line) =>
-          buildParagraphLine(line, params.type as ParagraphType, {
-            headingLevel: params.headingLevel,
-            taskStatus: (params.taskStatus as ParagraphTaskStatus) ?? undefined,
-            indentLevel: params.indentLevel,
-            priority: params.priority,
-          })
-        )
-        .join('\n');
-    }
+    const block = buildParagraphBlock(contentToInsert, params.type as ParagraphType | undefined, {
+      headingLevel: params.headingLevel,
+      taskStatus: (params.taskStatus as ParagraphTaskStatus) ?? undefined,
+      indentLevel: params.indentLevel,
+      priority: params.priority,
+    });
+    contentToInsert = block.content;
     const normalized = normalizeContentIndentation(contentToInsert, indentationStyle);
     const newContent = frontmatter.insertContentAtPosition(note.content, normalized.content, {
       position: params.position,
@@ -2093,6 +2087,16 @@ export async function insertContent(params: z.infer<typeof insertContentSchema>)
       },
       indentationStyle,
       linesRetabbed: normalized.linesRetabbed,
+      // `indentationStyle`/`linesRetabbed` describe only the indentation pass.
+      // Type formatting is a separate, earlier transform, and it used to be
+      // reported nowhere — a caller could set indentationStyle:"preserve", read
+      // linesRetabbed:0, and still have had its markers and indentation
+      // rewritten. This says what that pass actually did.
+      contentFormatting: {
+        appliedType: block.appliedType,
+        linesReformatted: block.linesReformatted,
+        linesPreserved: block.linesPreserved,
+      },
     };
   } catch (error) {
     return {

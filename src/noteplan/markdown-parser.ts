@@ -666,6 +666,121 @@ export function buildParagraphLine(
   }
 }
 
+/** A line that already declares its own list structure. */
+const OWN_LIST_MARKER_RE = /^([\t ]*)([*+\-])[ \t]+(\[[ x\->]\][ \t]+)?/;
+/** A line whose own structure is not a task/checklist/bullet, and must survive verbatim. */
+const OWN_OTHER_STRUCTURE_RE = /^[\t ]*(?:\d+[.)][ \t]|#{1,6}[ \t]|>[ \t]?|```|---\s*$)/;
+
+export interface ParagraphBlockResult {
+  content: string;
+  /** The block-level type actually applied, or null when none was in effect. */
+  appliedType: ParagraphType | null;
+  /** Lines this pass rewrote (output text differs from input). */
+  linesReformatted: number;
+  /** Lines left to their own structure: own marker, own indentation, or blank. */
+  linesPreserved: number;
+}
+
+/**
+ * Format a block of content for insertion, applying `type` without destroying
+ * structure the content already carries.
+ *
+ * A single `type` cannot describe every line of a multi-line block. Applying it
+ * line by line — which is what a naive `split('\n').map(buildParagraphLine)`
+ * does — strips each line's own indentation and marker, so indented `- `
+ * sub-bullets under a `* ` task get flattened into top-level open tasks. On a
+ * task-management surface that quietly puts informational text into the user's
+ * task queue.
+ *
+ * The rule here: `type` applies to lines that do not declare a structure of
+ * their own. A line that already starts with a list marker keeps that marker,
+ * its checkbox state and its indentation depth; headings, quotes, ordered list
+ * items, code fences and blank lines pass through untouched. A single-line
+ * block always takes `type`, since there is no block structure to preserve and
+ * the caller's intent is unambiguous.
+ */
+export function buildParagraphBlock(
+  content: string,
+  type: ParagraphType | undefined,
+  options?: {
+    headingLevel?: number;
+    taskStatus?: TaskStatus;
+    indentLevel?: number;
+    priority?: number;
+  }
+): ParagraphBlockResult {
+  if (!type) {
+    return { content, appliedType: null, linesReformatted: 0, linesPreserved: 0 };
+  }
+
+  const lines = content.split('\n');
+
+  if (lines.length === 1) {
+    const formatted = buildParagraphLine(content, type, options);
+    return {
+      content: formatted,
+      appliedType: type,
+      linesReformatted: formatted === content ? 0 : 1,
+      linesPreserved: 0,
+    };
+  }
+
+  let linesReformatted = 0;
+  let linesPreserved = 0;
+
+  const formattedLines = lines.map((line) => {
+    // Blank lines are not paragraphs of any type; formatting them produces
+    // bare markers ("* ") that read as empty open tasks.
+    if (line.trim() === '') {
+      linesPreserved += 1;
+      return line;
+    }
+
+    if (OWN_OTHER_STRUCTURE_RE.test(line)) {
+      linesPreserved += 1;
+      return line;
+    }
+
+    const ownMarker = line.match(OWN_LIST_MARKER_RE);
+    if (ownMarker) {
+      const [, indent, marker, checkbox] = ownMarker;
+      const hasCheckbox = checkbox !== undefined;
+      const ownType: ParagraphType =
+        marker === '+' ? 'checklist' : marker === '*' || hasCheckbox ? 'task' : 'bullet';
+      // Indentation is re-attached verbatim rather than rebuilt from an indent
+      // level, so a block's relative depth survives regardless of whether it
+      // was written with tabs or spaces. `indentationStyle` still gets the
+      // final say downstream.
+      const rebuilt =
+        indent +
+        buildParagraphLine(line, ownType, {
+          taskStatus: hasCheckbox ? markerToStatus(checkbox) : undefined,
+          hasCheckbox: hasCheckbox || undefined,
+          indentLevel: 0,
+        });
+      linesPreserved += 1;
+      if (rebuilt !== line) linesReformatted += 1;
+      return rebuilt;
+    }
+
+    const formatted = buildParagraphLine(line, type, options);
+    if (formatted !== line) linesReformatted += 1;
+    return formatted;
+  });
+
+  return {
+    content: formattedLines.join('\n'),
+    appliedType: type,
+    linesReformatted,
+    linesPreserved,
+  };
+}
+
+/** Map a raw checkbox marker ("[x]", "[-]", …) to its task status. */
+function markerToStatus(checkbox: string): TaskStatus {
+  return TASK_STATUS_MAP[checkbox.trim()] ?? 'open';
+}
+
 /**
  * Escape special regex characters
  */
