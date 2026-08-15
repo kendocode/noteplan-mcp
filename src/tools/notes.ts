@@ -1943,6 +1943,10 @@ export const editLineSchema = z.object({
     .boolean()
     .optional()
     .describe('Allow replacing line content with empty/blank text (default: false)'),
+  dryRun: z
+    .boolean()
+    .optional()
+    .describe('Preview the line change without modifying the note (default: false). No confirmationToken needed — rerun without dryRun to apply.'),
 });
 
 export const replaceLinesSchema = z.object({
@@ -1959,6 +1963,14 @@ export const replaceLinesSchema = z.object({
     .boolean()
     .optional()
     .describe('Allow replacing selected lines with empty content (default: false). Prefer delete_lines for pure deletion.'),
+  dryRun: z
+    .boolean()
+    .optional()
+    .describe('Preview lines that would be replaced without modifying the note (default: false)'),
+  confirmationToken: z
+    .string()
+    .optional()
+    .describe('Confirmation token issued by dryRun for replace execution'),
 });
 
 // Granular note operation implementations
@@ -2334,6 +2346,24 @@ export async function editLine(params: z.infer<typeof editLineSchema>) {
       warnings.push(buildAttachmentWarningMessage(removedAttachmentReferences.length));
     }
 
+    if (isTrueBool(params.dryRun)) {
+      return {
+        success: true,
+        dryRun: true,
+        message: `Dry run: line ${params.line} would be updated. Rerun without dryRun to apply (no confirmationToken needed).`,
+        originalLine,
+        newLine: normalized.content,
+        indentationStyle,
+        insertedLineCount: replacementLines.length,
+        lineDelta,
+        originalLineCount,
+        newLineCount: updatedLineCount,
+        removedAttachmentReferences: removedAttachmentReferences.slice(0, 20),
+        removedAttachmentReferencesTruncated: removedAttachmentReferences.length > 20,
+        warnings: warnings.length > 0 ? warnings : undefined,
+      };
+    }
+
     const writeIdentifier = note.source === 'space' ? (note.id || note.filename) : note.filename;
     await store.updateNote(writeIdentifier, newContent, { source: note.source });
 
@@ -2434,6 +2464,54 @@ export async function replaceLines(params: z.infer<typeof replaceLinesSchema>) {
       warnings.push(
         `Line numbers shifted by ${lineDelta > 0 ? '+' : ''}${lineDelta} after this replacement. Re-read line numbers before the next mutation.`
       );
+    }
+
+    const confirmTarget = `${note.filename}:${boundedStartLine}-${boundedEndLine}`;
+    if (isTrueBool(params.dryRun)) {
+      const token = issueConfirmationToken({
+        tool: 'noteplan_replace_lines',
+        target: confirmTarget,
+        action: 'replace_lines',
+      });
+      const replacedLinesPreview = allLines
+        .slice(startIndex, startIndex + lineCountToReplace)
+        .slice(0, 20)
+        .map((content, index) => ({
+          line: startIndex + 1 + index,
+          content,
+        }));
+      return {
+        success: true,
+        dryRun: true,
+        message: `Dry run: lines ${boundedStartLine}-${boundedEndLine} would be replaced`,
+        lineCountToReplace,
+        replacedLinesPreview,
+        previewTruncated: lineCountToReplace > replacedLinesPreview.length,
+        newContentPreview: normalized.content.length > 2000
+          ? `${normalized.content.slice(0, 2000)}…`
+          : normalized.content,
+        insertedLineCount: replacementLines.length,
+        lineDelta,
+        originalLineCount,
+        newLineCount,
+        indentationStyle,
+        removedAttachmentReferences: removedAttachmentReferences.slice(0, 20),
+        removedAttachmentReferencesTruncated: removedAttachmentReferences.length > 20,
+        warnings: warnings.length > 0 ? warnings : undefined,
+        ...token,
+      };
+    }
+
+    const confirmation = validateAndConsumeConfirmationToken(params.confirmationToken, {
+      tool: 'noteplan_replace_lines',
+      target: confirmTarget,
+      action: 'replace_lines',
+    });
+    if (!confirmation.ok) {
+      return {
+        success: false,
+        error: confirmationFailureMessage('noteplan_replace_lines', confirmation.reason),
+      };
     }
 
     allLines.splice(startIndex, lineCountToReplace, ...replacementLines);

@@ -1338,7 +1338,7 @@ export function createServer(): Server {
         {
           name: 'noteplan_edit_content',
           description:
-            'Edit note content. Actions use snake_case.\n\nActions:\n- "insert": Insert at position. Add heading="Section Name" to scope to a section. Positions: "start"+heading = after heading, "end"+heading = end of section, "after-heading" = after heading, "in-section" = end of section, "start" (no heading) = after frontmatter, "at-line" = specific line, "end" (no heading) = end of note.\n- "append": Insert at end. Supports heading param. Use date="today" for daily note.\n- "delete_lines": Delete line range (startLine + endLine, 1-indexed). Requires dryRun then confirmationToken.\n- "edit_line": Edit one line (line + content, 1-indexed). content="" clears line.\n- "replace_lines": Replace line range (startLine + endLine + content). Requires dryRun then confirmationToken.\n\nTarget note via id, filename, title, date, or query. Calendar notes auto-created. Use tabs for indentation.\n\nTasks: Set type="task", pass only text as content (e.g. "Buy groceries"). Do NOT include markers like "* [ ]" — type param handles formatting. type="checklist" for checklists. For task lifecycle use noteplan_paragraphs.\n\nSchedule: >YYYY-MM-DD or scheduleDate param. Links: [[Note Name]]. Never add ^id.\n\nFull content replace: use noteplan_manage_note(action: "update", fullReplace=true).',
+            'Edit note content. Actions use snake_case.\n\nActions:\n- "insert": Insert at position. Add heading="Section Name" to scope to a section. Positions: "start"+heading = after heading, "end"+heading = end of section, "after-heading" = after heading, "in-section" = end of section, "start" (no heading) = after frontmatter, "at-line" = specific line, "end" (no heading) = end of note.\n- "append": Insert at end. Supports heading param. Use date="today" for daily note.\n- "delete_lines": Delete line range (startLine + endLine, 1-indexed). Requires dryRun then confirmationToken.\n- "edit_line": Edit one line (line + content, 1-indexed). content="" clears line. Optional dryRun=true previews without writing (no confirmationToken needed).\n- "replace_lines": Replace line range (startLine + endLine + content). Requires dryRun then confirmationToken.\n\nTarget note via id, filename, title, date, or query. Calendar notes auto-created. Use tabs for indentation.\n\nTasks: Set type="task", pass only text as content (e.g. "Buy groceries"). Do NOT include markers like "* [ ]" — type param handles formatting. type="checklist" for checklists. For task lifecycle use noteplan_paragraphs.\n\nSchedule: >YYYY-MM-DD or scheduleDate param. Links: [[Note Name]]. Never add ^id.\n\nFull content replace: use noteplan_manage_note(action: "update", fullReplace=true).',
           inputSchema: {
             type: 'object',
             properties: {
@@ -1425,7 +1425,7 @@ export function createServer(): Server {
               },
               dryRun: {
                 type: 'boolean',
-                description: 'Preview impact and get confirmationToken — used by delete_lines, replace_lines',
+                description: 'Preview without writing — delete_lines/replace_lines: returns confirmationToken for execution; edit_line: preview only, no token needed. NOT supported by insert/append (they write immediately)',
               },
               confirmationToken: {
                 type: 'string',
@@ -2557,8 +2557,8 @@ export function createServer(): Server {
       { action: 'insert', description: 'Insert content at a position. Use heading param to scope to a section' },
       { action: 'append', description: 'Append content at end of note or section' },
       { action: 'delete_lines', description: 'Delete a line range (requires startLine + endLine, 1-indexed)' },
-      { action: 'edit_line', description: 'Edit a single line (requires line + content)' },
-      { action: 'replace_lines', description: 'Replace a line range (requires startLine + endLine + content)' },
+      { action: 'edit_line', description: 'Edit a single line (requires line + content). Optional dryRun=true previews without writing — no confirmationToken needed' },
+      { action: 'replace_lines', description: 'Replace a line range (requires startLine + endLine + content + dryRun/confirmationToken)' },
       { action: '(full replace)', description: 'To replace ALL content, use noteplan_manage_note(action: "update") with fullReplace=true instead' },
     ],
     noteplan_paragraphs: [
