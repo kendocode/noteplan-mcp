@@ -465,6 +465,10 @@ export const getNoteSchema = z.object({
     .boolean()
     .optional()
     .describe('Include note body content and line payload (default: false, metadata/preview only)'),
+  brief: z
+    .boolean()
+    .optional()
+    .describe('Return only metadata + parsed frontmatter + a heading map — no body/preview text at all (default: false). Takes priority over includeContent/previewChars when true; cheapest way to see a note\'s shape before deciding whether to read it.'),
   startLine: z.number().min(1).optional().describe('First line to include when includeContent=true (1-indexed)'),
   endLine: z.number().min(1).optional().describe('Last line to include when includeContent=true (1-indexed)'),
   limit: z.number().min(1).max(1000).optional().default(500).describe('Maximum lines to return when includeContent=true'),
@@ -685,6 +689,21 @@ export const restoreNoteSchema = z.object({
 });
 
 // Tool implementations
+// Heading map for `getNote brief:true` — a flat scan of ATX (`#`) headings.
+// Deliberately not the full ParagraphMetadata classifier (markdown-parser.ts):
+// that parses every paragraph type (tasks, checklists, quotes, ...) for
+// edit-time bookkeeping, which is far more work than "what's the shape of
+// this note" needs.
+function extractHeadingMap(content: string): { level: number; text: string; line: number }[] {
+  const headings: { level: number; text: string; line: number }[] = [];
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^(#{1,6})\s+(.*)$/);
+    if (m) headings.push({ level: m[1].length, text: m[2].trim(), line: i + 1 });
+  }
+  return headings;
+}
+
 export async function getNote(params: z.infer<typeof getNoteSchema>) {
   const note = await store.getNote(params);
 
@@ -692,6 +711,36 @@ export async function getNote(params: z.infer<typeof getNoteSchema>) {
     return {
       success: false,
       error: 'Note not found',
+    };
+  }
+
+  const noteMeta = {
+    id: note.id,
+    title: note.title,
+    filename: note.filename,
+    type: note.type,
+    source: note.source,
+    folder: note.folder,
+    spaceId: note.spaceId,
+    date: note.date,
+    modifiedAt: note.modifiedAt?.toISOString(),
+    createdAt: note.createdAt?.toISOString(),
+  };
+
+  if (toOptionalBoolean((params as { brief?: unknown }).brief)) {
+    const parsed = frontmatter.parseNoteContent(note.content);
+    return {
+      success: true,
+      note: noteMeta,
+      brief: true,
+      frontmatter: parsed.frontmatter ?? {},
+      // Scanned over the FULL content, not parsed.body: line numbers here must
+      // stay absolute (1-indexed from the top of the note) to match editLine/
+      // replaceLines/getParagraphs' convention — a body-relative number would
+      // be silently off by the frontmatter's line count for every note that has one.
+      headings: extractHeadingMap(note.content),
+      lineCount: note.content.split('\n').length,
+      contentLength: note.content.length,
     };
   }
 
@@ -708,18 +757,7 @@ export async function getNote(params: z.infer<typeof getNoteSchema>) {
 
   const result: Record<string, unknown> = {
     success: true,
-    note: {
-      id: note.id,
-      title: note.title,
-      filename: note.filename,
-      type: note.type,
-      source: note.source,
-      folder: note.folder,
-      spaceId: note.spaceId,
-      date: note.date,
-      modifiedAt: note.modifiedAt?.toISOString(),
-      createdAt: note.createdAt?.toISOString(),
-    },
+    note: noteMeta,
     contentIncluded: includeContent,
     lineCount,
     contentLength,
@@ -1588,6 +1626,16 @@ export const getParagraphsSchema = z.object({
   limit: z.number().min(1).max(1000).optional().default(200).describe('Maximum lines to return'),
   offset: z.number().min(0).optional().default(0).describe('Pagination offset within selected range'),
   cursor: z.string().optional().describe('Cursor token from previous page (preferred over offset)'),
+  content: z
+    .boolean()
+    .optional()
+    .default(true)
+    .describe('Include the joined "content" string in the response (default: true; unfiltered/no-types path only). Set false when you only need the per-line "lines" array.'),
+  lines: z
+    .boolean()
+    .optional()
+    .default(true)
+    .describe('Include the per-line "lines" array in the response (default: true; unfiltered/no-types path only — a `types` filter always needs and returns "lines"). Set false when you only need the joined "content" string.'),
 }).superRefine((input, ctx) => {
   if (!input.id && !input.filename && !input.title && !input.date && !input.query) {
     ctx.addIssue({
@@ -1755,11 +1803,17 @@ export async function getParagraphs(params: z.infer<typeof getParagraphsSchema>)
     limit: lineWindow.limit,
     hasMore: lineWindow.hasMore,
     nextCursor: lineWindow.nextCursor,
-    content: lineWindow.content,
-    lines: lineWindow.lines.map((lineObj) => {
-      return annotateFromMeta(lineObj, windowMeta[lineObj.lineIndex]);
-    }),
   };
+  const wantContent = params.content !== false;
+  const wantLines = params.lines !== false;
+  if (wantContent) {
+    result.content = lineWindow.content;
+  }
+  if (wantLines) {
+    result.lines = lineWindow.lines.map((lineObj) => {
+      return annotateFromMeta(lineObj, windowMeta[lineObj.lineIndex]);
+    });
+  }
 
   if (lineWindow.hasMore) {
     result.performanceHints = [NEXT_CURSOR_HINT];
@@ -2052,6 +2106,12 @@ const noteReferenceSchema = {
   space: z.string().optional().describe('Space name or ID scope'),
 };
 
+const echoParam = z
+  .boolean()
+  .optional()
+  .default(true)
+  .describe('Echo the changed content back in the response (default: true). Set false to get only the outcome (success/message/counts) — cheaper when the caller already knows what it wrote.');
+
 export const deleteLinesSchema = z.object({
   ...noteReferenceSchema,
   startLine: z.number().describe('First line to delete (1-indexed, inclusive)'),
@@ -2064,6 +2124,7 @@ export const deleteLinesSchema = z.object({
     .string()
     .optional()
     .describe('Confirmation token issued by dryRun for delete execution'),
+  echo: echoParam,
 });
 
 export const editLineSchema = z.object({
@@ -2087,6 +2148,7 @@ export const editLineSchema = z.object({
     .string()
     .optional()
     .describe('Token issued by dryRun. Optional — this action writes in one call without it'),
+  echo: echoParam,
 });
 
 export const replaceLinesSchema = z.object({
@@ -2111,6 +2173,7 @@ export const replaceLinesSchema = z.object({
     .string()
     .optional()
     .describe('Token issued by dryRun. Optional — this action writes in one call without it'),
+  echo: echoParam,
 });
 
 // Granular note operation implementations
@@ -2451,11 +2514,13 @@ export async function deleteLines(params: z.infer<typeof deleteLinesSchema>) {
     const writeIdentifier = note.source === 'space' ? (note.id || note.filename) : note.filename;
     await store.updateNote(writeIdentifier, newContent, { source: note.source });
 
+    const echo = params.echo !== false;
     return {
       success: true,
       message: `Lines ${boundedStartLine}-${boundedEndLine} deleted`,
       lineCountToDelete,
-      removedAttachmentReferences: removedAttachmentReferences.slice(0, 20),
+      removedAttachmentReferenceCount: removedAttachmentReferences.length,
+      ...(echo ? { removedAttachmentReferences: removedAttachmentReferences.slice(0, 20) } : {}),
       removedAttachmentReferencesTruncated: removedAttachmentReferences.length > 20,
       warnings: attachmentWarning ? [attachmentWarning] : undefined,
     };
@@ -2548,18 +2613,19 @@ export async function editLine(params: z.infer<typeof editLineSchema>) {
     const writeIdentifier = note.source === 'space' ? (note.id || note.filename) : note.filename;
     await store.updateNote(writeIdentifier, newContent, { source: note.source });
 
+    const echo = params.echo !== false;
     return {
       success: true,
       message: `Line ${params.line} updated`,
-      originalLine,
-      newLine: normalized.content,
+      ...(echo ? { originalLine, newLine: normalized.content } : {}),
       indentationStyle,
       linesRetabbed: normalized.linesRetabbed,
       insertedLineCount: replacementLines.length,
       lineDelta,
       originalLineCount,
       newLineCount: updatedLineCount,
-      removedAttachmentReferences: removedAttachmentReferences.slice(0, 20),
+      removedAttachmentReferenceCount: removedAttachmentReferences.length,
+      ...(echo ? { removedAttachmentReferences: removedAttachmentReferences.slice(0, 20) } : {}),
       removedAttachmentReferencesTruncated: removedAttachmentReferences.length > 20,
       warnings: warnings.length > 0 ? warnings : undefined,
     };
@@ -2671,6 +2737,7 @@ export async function replaceLines(params: z.infer<typeof replaceLinesSchema>) {
     const writeIdentifier = note.source === 'space' ? (note.id || note.filename) : note.filename;
     await store.updateNote(writeIdentifier, replacedContent, { source: note.source });
 
+    const echo = params.echo !== false;
     return {
       success: true,
       message: `Lines ${boundedStartLine}-${boundedEndLine} replaced`,
@@ -2681,7 +2748,8 @@ export async function replaceLines(params: z.infer<typeof replaceLinesSchema>) {
       newLineCount,
       indentationStyle,
       linesRetabbed: normalized.linesRetabbed,
-      removedAttachmentReferences: removedAttachmentReferences.slice(0, 20),
+      removedAttachmentReferenceCount: removedAttachmentReferences.length,
+      ...(echo ? { removedAttachmentReferences: removedAttachmentReferences.slice(0, 20) } : {}),
       removedAttachmentReferencesTruncated: removedAttachmentReferences.length > 20,
       warnings: warnings.length > 0 ? warnings : undefined,
     };

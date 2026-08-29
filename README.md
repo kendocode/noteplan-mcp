@@ -165,15 +165,18 @@ Unified note retrieval: get a single note, list notes, resolve references, fetch
 - `rangePeriod` or `startDate`/`endDate` — daily notes in date range
 - `folder` — notes in a folder
 - Fallback: list notes with optional filters
+- `brief=true` (single-note lookup only; default false) — frontmatter + a heading map (`{level, text, line}`, absolute line numbers), no body/preview text. Cheapest way to see a note's shape before deciding whether to read it.
 
 ### `noteplan_manage_note`
 Note lifecycle: `create`, `update`, `delete`, `move`, `restore`, `rename`, `set_property`, `remove_property`.
 
 ### `noteplan_edit_content`
 Edit note content: `insert`, `append`, `delete_lines`, `edit_line`, `replace_lines`. All actions target notes via `id`, `filename`, `title`, `date`, or `query`. Calendar notes are auto-created when targeted by date.
+- `echo=false` (default true, on `edit_line`/`replace_lines`/`delete_lines`) — drop the changed-content echo (`originalLine`/`newLine`) and the full `removedAttachmentReferences` list from the response, keeping `success`/`message`/counts/`removedAttachmentReferenceCount`. Use when the caller already knows what it wrote.
 
 ### `noteplan_paragraphs`
 Paragraph and task operations: `get` (line metadata), `search` (find lines in a note), `search_global` (tasks across all notes), `add` (task with auto-formatted marker), `complete`, `update`.
+- `get`'s unfiltered (no `types`) path returns both `content` (joined string) and `lines` (per-line array) by default; pass `content=false` or `lines=false` to return only the one you need.
 
 ### `noteplan_search`
 Search across notes or list tags.

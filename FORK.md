@@ -15,6 +15,7 @@ so attribution is automatic and every fix is one click from becoming a PR.
 | `fix/insert-preserves-block-structure` | `insert` stops flattening multi-line blocks into one paragraph type; then a second commit stopping `insertContent` mutating the caller's `params` | new issue, then PR |
 | `fix/reject-inapplicable-params` | run the per-action zod schemas: a parameter the action does not implement is refused, not silently dropped | PR onto issue #8 |
 | `feat/dryrun-for-line-edits` | `dryRun` implemented for `insert`/`append`/`edit_line`/`replace_lines`; branches from `fix/reject-inapplicable-params` | PR onto issue #8 |
+| `payload-trims` | opt-in payload-shrink flags (`brief` on `get_notes`, `content`/`lines` on `paragraphs get`, `echo` on `edit_line`/`replace_lines`/`delete_lines`); every default unchanged | never — Kendoclaw-only, not an upstream bug fix |
 | `kendoclaw` | integration branch: all of the above merged. **This is what we run.** | never |
 
 Every topic branch starts from base commit `306f57d` and holds one
