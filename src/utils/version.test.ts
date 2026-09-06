@@ -47,6 +47,34 @@ function mockPlistSucceedsAppleScriptDoesNot() {
   });
 }
 
+/** Reproduces the exact production failure mode observed in
+ *  ~/.local/share/kendoclaw/logs/mention-ingest.err.log under launchd: the
+ *  real app IS running, so the first candidate's "is running" check
+ *  succeeds, but the getVersion call times out with a plain
+ *  `spawnSync osascript ETIMEDOUT` Error that carries no `killed` property
+ *  — so the existing killed/permission branches in detectViaAppleScript()
+ *  don't match, execution falls through to the next candidate, and EVERY
+ *  candidate (including the 3 that were never actually running) times out
+ *  on its own "is running" probe under the same no-UI-session condition.
+ *  cachedAppName is never set, and plist detection succeeds behind it. */
+function mockRealLaunchdTimeoutPattern() {
+  existsSyncMock.mockReturnValue(true);
+  let isRunningCallCount = 0;
+  execFileSyncMock.mockImplementation((cmd: string, args: string[] = []) => {
+    if (cmd === 'osascript' && args[1]?.includes('is running')) {
+      isRunningCallCount++;
+      if (isRunningCallCount === 1) return 'true\n'; // "NotePlan" really is running
+      throw new Error('spawnSync osascript ETIMEDOUT'); // no `killed` property
+    }
+    if (cmd === 'osascript' && args[1]?.includes('getVersion')) {
+      throw new Error('spawnSync osascript ETIMEDOUT'); // times out, no `killed` property
+    }
+    if (cmd === 'defaults' && args.includes('CFBundleShortVersionString')) return '3.21.2\n';
+    if (cmd === 'defaults' && args.includes('CFBundleVersion')) return '1522\n';
+    throw new Error(`unexpected execFileSync call in this test: ${cmd} ${args.join(' ')}`);
+  });
+}
+
 describe('AppleScript detection cost fix', () => {
   const ORIGINAL_SKIP_ENV = process.env.NOTEPLAN_MCP_SKIP_APPLESCRIPT;
 
@@ -124,6 +152,34 @@ describe('AppleScript detection cost fix', () => {
       getDetectedAppName();
 
       expect(osascriptCallCount()).toBeGreaterThan(callsAfterFirstPass); // retry did fire
+    });
+  });
+
+  describe('production launchd failure mode (mention-ingest.err.log, 2026-09-05)', () => {
+    it('skip flag avoids the observed ETIMEDOUT cascade entirely, still resolves via plist', async () => {
+      process.env.NOTEPLAN_MCP_SKIP_APPLESCRIPT = '1';
+      mockRealLaunchdTimeoutPattern();
+
+      const { getNotePlanVersion, getDetectedAppName } = await import('./version.js');
+      const version = getNotePlanVersion(true);
+      getDetectedAppName();
+
+      expect(version).toEqual({ version: '3.21.2', build: 1522, source: 'plist' });
+      expect(osascriptCallCount()).toBe(0);
+    });
+
+    it('without the skip flag, the retry-suppression half still prevents the second pass', async () => {
+      delete process.env.NOTEPLAN_MCP_SKIP_APPLESCRIPT;
+      mockRealLaunchdTimeoutPattern();
+
+      const { getNotePlanVersion, getDetectedAppName } = await import('./version.js');
+      getNotePlanVersion(true);
+      const callsAfterFirstPass = osascriptCallCount();
+      expect(callsAfterFirstPass).toBe(5); // 1 "is running" (true) + 1 getVersion + 3 "is running" (timeout)
+
+      getDetectedAppName(); // plist already produced a version — retry must not fire
+
+      expect(osascriptCallCount()).toBe(callsAfterFirstPass);
     });
   });
 });
