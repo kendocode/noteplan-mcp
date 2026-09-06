@@ -32,13 +32,26 @@ let cachedVersion: NotePlanVersion | null = null;
 let cachedAt = 0;
 let cachedAppName: string | null = null;
 
+/** Set NOTEPLAN_MCP_SKIP_APPLESCRIPT=1 to skip AppleScript probing entirely — for
+ *  contexts (e.g. launchd) where there is no UI session for the Automation
+ *  permission prompt to appear in, so every osascript call can only ever block
+ *  to its timeout rather than succeed or fail fast. Plist detection still runs. */
+function isAppleScriptSkipped(): boolean {
+  const v = process.env.NOTEPLAN_MCP_SKIP_APPLESCRIPT;
+  return v === '1' || v?.toLowerCase() === 'true';
+}
+
 /**
  * Returns the AppleScript-resolvable app name discovered during version detection.
  * If no name was cached yet (e.g. first-run permission timeout), retries AppleScript
- * detection — by now the user may have granted Automation permission.
+ * detection — by now the user may have granted Automation permission. Skipped when
+ * plist detection already produced a version: that means a full detection pass
+ * already ran this process and found no usable AppleScript app name (the killed/
+ * permission-error paths in detectViaAppleScript cache a name even on failure), so
+ * a retry would just repeat the same expensive, futile probe.
  */
 export function getDetectedAppName(): string {
-  if (!cachedAppName) {
+  if (!cachedAppName && !isAppleScriptSkipped() && cachedVersion?.source !== 'plist') {
     console.error('[noteplan-mcp] App name not cached yet, retrying AppleScript detection...');
     detectViaAppleScript(); // Side-effect: sets cachedAppName if successful
   }
@@ -55,6 +68,10 @@ export const APPLESCRIPT_APP_NAMES = [
 ];
 
 function detectViaAppleScript(): NotePlanVersion | null {
+  if (isAppleScriptSkipped()) {
+    console.error('[noteplan-mcp] AppleScript: skipped (NOTEPLAN_MCP_SKIP_APPLESCRIPT set)');
+    return null;
+  }
   for (const appName of APPLESCRIPT_APP_NAMES) {
     try {
       const isRunning = execFileSync('osascript', ['-e', `application "${appName}" is running`], {

@@ -2109,8 +2109,8 @@ const noteReferenceSchema = {
 const echoParam = z
   .boolean()
   .optional()
-  .default(true)
-  .describe('Echo the changed content back in the response (default: true). Set false to get only the outcome (success/message/counts) — cheaper when the caller already knows what it wrote.');
+  .default(false)
+  .describe('Echo the changed content back in the response (default: false — only the outcome is returned). Set true to also get originalLine/newLine or the full removedAttachmentReferences list.');
 
 export const deleteLinesSchema = z.object({
   ...noteReferenceSchema,
@@ -2514,7 +2514,7 @@ export async function deleteLines(params: z.infer<typeof deleteLinesSchema>) {
     const writeIdentifier = note.source === 'space' ? (note.id || note.filename) : note.filename;
     await store.updateNote(writeIdentifier, newContent, { source: note.source });
 
-    const echo = params.echo !== false;
+    const echo = params.echo === true;
     return {
       success: true,
       message: `Lines ${boundedStartLine}-${boundedEndLine} deleted`,
@@ -2613,7 +2613,7 @@ export async function editLine(params: z.infer<typeof editLineSchema>) {
     const writeIdentifier = note.source === 'space' ? (note.id || note.filename) : note.filename;
     await store.updateNote(writeIdentifier, newContent, { source: note.source });
 
-    const echo = params.echo !== false;
+    const echo = params.echo === true;
     return {
       success: true,
       message: `Line ${params.line} updated`,
@@ -2737,7 +2737,7 @@ export async function replaceLines(params: z.infer<typeof replaceLinesSchema>) {
     const writeIdentifier = note.source === 'space' ? (note.id || note.filename) : note.filename;
     await store.updateNote(writeIdentifier, replacedContent, { source: note.source });
 
-    const echo = params.echo !== false;
+    const echo = params.echo === true;
     return {
       success: true,
       message: `Lines ${boundedStartLine}-${boundedEndLine} replaced`,

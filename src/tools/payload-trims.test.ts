@@ -1,7 +1,10 @@
-// Tests for the opt-in payload-trim flags added 2026-08-29 (context-economy
-// plan, Phase 3 row: getNote `brief`, getParagraphs `content`/`lines`,
-// edit_content `echo`). Every flag defaults to the pre-existing behavior —
-// these tests pin BOTH the default (unchanged) and the opt-in trimmed shape.
+// Tests for the payload-trim flags added 2026-08-29 (context-economy plan,
+// Phase 3 row: getNote `brief`, getParagraphs `content`/`lines`, edit_content
+// `echo`). `brief`/`content`/`lines` still default to the pre-existing
+// behavior. `echo` was flipped to default `false` on 2026-09-06 (P3 row
+// 2026-08-18): the echo fields are a courtesy nobody parsed, so trimming them
+// by default is safe — unlike `content`/`lines`, where a caller could be
+// relying on either shape.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../noteplan/preferences.js', () => ({
@@ -101,46 +104,67 @@ describe('getParagraphs content:false / lines:false', () => {
   });
 });
 
-describe('edit_content echo:false', () => {
+describe('edit_content echo default (false)', () => {
   beforeEach(() => {
     updateNote.mockClear();
     getNoteStore.mockReset();
     getNoteStore.mockResolvedValue(NOTE);
   });
 
-  it('editLine default echoes originalLine/newLine (unchanged)', async () => {
+  it('editLine default (no echo param) drops originalLine/newLine, keeps outcome fields', async () => {
     const result = (await editLine({ id: NOTE.id, line: 8, content: 'ALPHA' } as AnyParams as Parameters<typeof editLine>[0])) as AnyParams;
-    expect(result.success).toBe(true);
-    expect(result.originalLine).toBe('alpha');
-    expect(result.newLine).toBe('ALPHA');
-  });
-
-  it('editLine echo:false drops originalLine/newLine, keeps outcome fields', async () => {
-    const result = (await editLine({ id: NOTE.id, line: 8, content: 'ALPHA', echo: false } as AnyParams as Parameters<typeof editLine>[0])) as AnyParams;
     expect(result.success).toBe(true);
     expect(result.originalLine).toBeUndefined();
     expect(result.newLine).toBeUndefined();
     expect(result.lineDelta).toBe(0);
   });
 
-  it('replaceLines echo:false drops the attachment-reference array, keeps its count', async () => {
+  it('editLine echo:true opts back in to originalLine/newLine', async () => {
+    const result = (await editLine({ id: NOTE.id, line: 8, content: 'ALPHA', echo: true } as AnyParams as Parameters<typeof editLine>[0])) as AnyParams;
+    expect(result.success).toBe(true);
+    expect(result.originalLine).toBe('alpha');
+    expect(result.newLine).toBe('ALPHA');
+  });
+
+  it('replaceLines default (no echo param) drops the attachment-reference array, keeps its count', async () => {
     const result = (await replaceLines({
-      id: NOTE.id, startLine: 8, endLine: 8, content: 'ALPHA', echo: false,
+      id: NOTE.id, startLine: 8, endLine: 8, content: 'ALPHA',
     } as AnyParams as Parameters<typeof replaceLines>[0])) as AnyParams;
     expect(result.success).toBe(true);
     expect(result.removedAttachmentReferences).toBeUndefined();
     expect(result.removedAttachmentReferenceCount).toBe(0);
   });
 
-  it('deleteLines echo:false drops the attachment-reference array, keeps its count', async () => {
+  it('replaceLines echo:true opts back in to the attachment-reference array', async () => {
+    const result = (await replaceLines({
+      id: NOTE.id, startLine: 8, endLine: 8, content: 'ALPHA', echo: true,
+    } as AnyParams as Parameters<typeof replaceLines>[0])) as AnyParams;
+    expect(result.success).toBe(true);
+    expect(result.removedAttachmentReferences).toEqual([]);
+    expect(result.removedAttachmentReferenceCount).toBe(0);
+  });
+
+  it('deleteLines default (no echo param) drops the attachment-reference array, keeps its count', async () => {
     const preview = (await deleteLines({
       id: NOTE.id, startLine: 8, endLine: 8, dryRun: true,
     } as AnyParams as Parameters<typeof deleteLines>[0])) as AnyParams;
     const result = (await deleteLines({
-      id: NOTE.id, startLine: 8, endLine: 8, echo: false, confirmationToken: preview.confirmationToken,
+      id: NOTE.id, startLine: 8, endLine: 8, confirmationToken: preview.confirmationToken,
     } as AnyParams as Parameters<typeof deleteLines>[0])) as AnyParams;
     expect(result.success).toBe(true);
     expect(result.removedAttachmentReferences).toBeUndefined();
+    expect(result.removedAttachmentReferenceCount).toBe(0);
+  });
+
+  it('deleteLines echo:true opts back in to the attachment-reference array', async () => {
+    const preview = (await deleteLines({
+      id: NOTE.id, startLine: 8, endLine: 8, dryRun: true,
+    } as AnyParams as Parameters<typeof deleteLines>[0])) as AnyParams;
+    const result = (await deleteLines({
+      id: NOTE.id, startLine: 8, endLine: 8, echo: true, confirmationToken: preview.confirmationToken,
+    } as AnyParams as Parameters<typeof deleteLines>[0])) as AnyParams;
+    expect(result.success).toBe(true);
+    expect(result.removedAttachmentReferences).toEqual([]);
     expect(result.removedAttachmentReferenceCount).toBe(0);
   });
 });
