@@ -20,7 +20,16 @@ import {
   deleteLinesSchema,
   editLineSchema,
   replaceLinesSchema,
+  getParagraphsSchema,
+  searchParagraphsSchema,
+  searchParagraphsGlobalSchema,
 } from '../tools/notes.js';
+import {
+  addTaskSchema,
+  completeTaskSchema,
+  updateTaskSchema,
+  deleteRecurringTaskSchema,
+} from '../tools/tasks.js';
 
 // The real edit_content action set, so these tests fail if a schema changes
 // under them rather than passing against a private copy.
@@ -41,6 +50,30 @@ function check(action: string, args: Record<string, unknown>) {
     args: { action, ...args },
     schemas: EDIT_CONTENT,
     envelopeKeys: ENVELOPE,
+  });
+}
+
+// The real noteplan_paragraphs action set (server.ts's TOOL_ACTION_SCHEMAS),
+// so these tests fail if that map drifts from what's actually registered.
+const PARAGRAPHS = {
+  get: getParagraphsSchema,
+  search: searchParagraphsSchema,
+  search_global: searchParagraphsGlobalSchema,
+  add: addTaskSchema,
+  complete: completeTaskSchema,
+  update: updateTaskSchema,
+  delete_recurring: deleteRecurringTaskSchema,
+} as Record<string, z.ZodTypeAny>;
+
+const PARAGRAPHS_ENVELOPE = ['action', 'scheduleDate', 'date', 'filename', 'target'];
+
+function checkParagraphs(action: string, args: Record<string, unknown>) {
+  return checkApplicableParams({
+    tool: 'noteplan_paragraphs',
+    action,
+    args: { action, ...args },
+    schemas: PARAGRAPHS,
+    envelopeKeys: PARAGRAPHS_ENVELOPE,
   });
 }
 
@@ -172,5 +205,57 @@ describe('checkApplicableParams — calls that must keep working', () => {
 
   it('leaves an unknown action to the dispatcher to report', () => {
     expect(check('not_an_action', { anything: true }).ok).toBe(true);
+  });
+});
+
+// Covers deficiency 2026-09-13-noteplan-mcp-paragraphs-get-content-lines-flags-
+// unreachable-via-mcp-schema: `get`/`search`/`search_global` were absent from
+// the guard's schema map entirely, so nothing on those actions was ever
+// checked — `paragraphMaxChars` (a `search`-only param) was silently accepted
+// and ignored by `get`.
+describe('checkApplicableParams — noteplan_paragraphs read actions', () => {
+  it('accepts the get payload-trim flags and the types filter', () => {
+    expect(checkParagraphs('get', { id: 'n1', includeContent: false }).ok).toBe(true);
+    expect(checkParagraphs('get', { id: 'n1', includeLines: false }).ok).toBe(true);
+    expect(checkParagraphs('get', { id: 'n1', types: ['open-task'] }).ok).toBe(true);
+  });
+
+  it('refuses paragraphMaxChars on get, naming search as where it belongs', () => {
+    const result = checkParagraphs('get', { id: 'n1', paragraphMaxChars: 200 });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe(ERR_UNSUPPORTED_PARAM);
+    expect(result.unsupported).toEqual(['paragraphMaxChars']);
+    expect(result.error).toContain('search');
+  });
+
+  it('refuses the string task-content field on get, naming add/update as where it belongs', () => {
+    const result = checkParagraphs('get', { id: 'n1', content: 'not a boolean flag' });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.unsupported).toEqual(['content']);
+    expect(result.error).toContain('add');
+    expect(result.error).toContain('update');
+  });
+
+  it('refuses includeContent/includeLines on search and search_global, which never implemented them', () => {
+    const searchResult = checkParagraphs('search', { id: 'n1', query: 'x', includeContent: false });
+    expect(searchResult.ok).toBe(false);
+
+    const globalResult = checkParagraphs('search_global', { query: 'x', includeLines: false });
+    expect(globalResult.ok).toBe(false);
+  });
+
+  it('accepts an ordinary search and search_global call', () => {
+    expect(checkParagraphs('search', { id: 'n1', query: 'x', paragraphMaxChars: 200 }).ok).toBe(true);
+    expect(checkParagraphs('search_global', { query: 'x', paragraphMaxChars: 200, folder: 'Notes' }).ok).toBe(true);
+  });
+
+  it('still accepts an ordinary add/complete/update call (mutating actions unaffected)', () => {
+    expect(checkParagraphs('add', { target: 'today', content: 'a task' }).ok).toBe(true);
+    expect(checkParagraphs('complete', { id: 'n1', lineIndex: 2 }).ok).toBe(true);
+    expect(checkParagraphs('update', { id: 'n1', lineIndex: 2, content: 'x' }).ok).toBe(true);
   });
 });

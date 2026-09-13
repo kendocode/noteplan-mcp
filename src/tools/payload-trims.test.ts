@@ -1,10 +1,15 @@
 // Tests for the payload-trim flags added 2026-08-29 (context-economy plan,
-// Phase 3 row: getNote `brief`, getParagraphs `content`/`lines`, edit_content
-// `echo`). `brief`/`content`/`lines` still default to the pre-existing
-// behavior. `echo` was flipped to default `false` on 2026-09-06 (P3 row
-// 2026-08-18): the echo fields are a courtesy nobody parsed, so trimming them
-// by default is safe — unlike `content`/`lines`, where a caller could be
-// relying on either shape.
+// Phase 3 row: getNote `brief`, getParagraphs `includeContent`/`includeLines`,
+// edit_content `echo`). `brief`/`includeContent`/`includeLines` still default
+// to the pre-existing behavior. `echo` was flipped to default `false` on
+// 2026-09-06 (P3 row 2026-08-18): the echo fields are a courtesy nobody
+// parsed, so trimming them by default is safe — unlike `includeContent`/
+// `includeLines`, where a caller could be relying on either shape.
+// `includeContent`/`includeLines` were renamed from `content`/`lines` on
+// 2026-09-13 (deficiency 2026-09-13-noteplan-mcp-paragraphs-get-content-lines-
+// flags-unreachable-via-mcp-schema): the old names collided with the string
+// `content` field shared with add/update in the tool's advertised inputSchema,
+// which made these flags unreachable for any client honoring that schema.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../noteplan/preferences.js', () => ({
@@ -79,7 +84,7 @@ describe('getNote brief:true', () => {
   });
 });
 
-describe('getParagraphs content:false / lines:false', () => {
+describe('getParagraphs includeContent:false / includeLines:false', () => {
   beforeEach(() => {
     getNoteStore.mockReset();
     getNoteStore.mockResolvedValue(NOTE);
@@ -91,14 +96,14 @@ describe('getParagraphs content:false / lines:false', () => {
     expect(Array.isArray(result.lines)).toBe(true);
   });
 
-  it('lines:false omits the per-line array, keeps content', async () => {
-    const result = (await getParagraphs({ id: NOTE.id, lines: false } as AnyParams as Parameters<typeof getParagraphs>[0])) as AnyParams;
+  it('includeLines:false omits the per-line array, keeps content', async () => {
+    const result = (await getParagraphs({ id: NOTE.id, includeLines: false } as AnyParams as Parameters<typeof getParagraphs>[0])) as AnyParams;
     expect(typeof result.content).toBe('string');
     expect(result.lines).toBeUndefined();
   });
 
-  it('content:false omits the joined string, keeps lines', async () => {
-    const result = (await getParagraphs({ id: NOTE.id, content: false } as AnyParams as Parameters<typeof getParagraphs>[0])) as AnyParams;
+  it('includeContent:false omits the joined string, keeps lines', async () => {
+    const result = (await getParagraphs({ id: NOTE.id, includeContent: false } as AnyParams as Parameters<typeof getParagraphs>[0])) as AnyParams;
     expect(result.content).toBeUndefined();
     expect(Array.isArray(result.lines)).toBe(true);
   });
