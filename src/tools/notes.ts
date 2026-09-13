@@ -1626,12 +1626,12 @@ export const getParagraphsSchema = z.object({
   limit: z.number().min(1).max(1000).optional().default(200).describe('Maximum lines to return'),
   offset: z.number().min(0).optional().default(0).describe('Pagination offset within selected range'),
   cursor: z.string().optional().describe('Cursor token from previous page (preferred over offset)'),
-  content: z
+  includeContent: z
     .boolean()
     .optional()
     .default(true)
     .describe('Include the joined "content" string in the response (default: true; unfiltered/no-types path only). Set false when you only need the per-line "lines" array.'),
-  lines: z
+  includeLines: z
     .boolean()
     .optional()
     .default(true)
@@ -1804,8 +1804,8 @@ export async function getParagraphs(params: z.infer<typeof getParagraphsSchema>)
     hasMore: lineWindow.hasMore,
     nextCursor: lineWindow.nextCursor,
   };
-  const wantContent = params.content !== false;
-  const wantLines = params.lines !== false;
+  const wantContent = params.includeContent !== false;
+  const wantLines = params.includeLines !== false;
   if (wantContent) {
     result.content = lineWindow.content;
   }

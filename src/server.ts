@@ -35,10 +35,10 @@ import { isReadOnly, isSkipDryRun, shouldAutoLaunchNotePlan } from './utils/serv
 import { z } from 'zod';
 import { checkApplicableParams } from './utils/param-validation.js';
 
-// Per-action parameter schemas for the mutating tools. The tool JSON schema is a
-// flat bag shared by every action, so these are what decide whether a given key
-// actually applies to the action the caller picked; see param-validation.ts.
-const MUTATING_TOOL_SCHEMAS = {
+// Per-action parameter schemas for the consolidated tools. The tool JSON schema is a
+// flat bag shared by every action (mutating or not), so these are what decide whether
+// a given key actually applies to the action the caller picked; see param-validation.ts.
+const TOOL_ACTION_SCHEMAS = {
   noteplan_edit_content: {
     schemas: {
       insert: noteTools.insertContentSchema,
@@ -65,6 +65,9 @@ const MUTATING_TOOL_SCHEMAS = {
   },
   noteplan_paragraphs: {
     schemas: {
+      get: noteTools.getParagraphsSchema,
+      search: noteTools.searchParagraphsSchema,
+      search_global: noteTools.searchParagraphsGlobalSchema,
       add: taskTools.addTaskSchema,
       complete: taskTools.completeTaskSchema,
       update: taskTools.updateTaskSchema,
@@ -80,14 +83,14 @@ const MUTATING_TOOL_SCHEMAS = {
  * dropping them silently. Returns an error result to hand back, or null.
  */
 function rejectInapplicableParams(
-  tool: keyof typeof MUTATING_TOOL_SCHEMAS,
+  tool: keyof typeof TOOL_ACTION_SCHEMAS,
   args: unknown,
 ): { success: false; error: string; code: string } | null {
   const bag = (args ?? {}) as Record<string, unknown>;
   const action = typeof bag.action === 'string' ? bag.action : '';
   if (!action) return null; // The dispatcher reports a missing/unknown action itself.
 
-  const { schemas, envelopeKeys } = MUTATING_TOOL_SCHEMAS[tool];
+  const { schemas, envelopeKeys } = TOOL_ACTION_SCHEMAS[tool];
   const check = checkApplicableParams({
     tool,
     action,
@@ -1512,7 +1515,7 @@ export function createServer(): Server {
         {
           name: 'noteplan_paragraphs',
           description:
-            'Task lifecycle and paragraph inspection.\n\nParagraph actions:\n- get: Get note lines with metadata (requires note ref). Returns lineIndex, content, type. Filter with types param: base types (title, heading, bullet, text, quote, separator, empty), task/checklist by status (open-task, done-task, cancelled-task, scheduled-task, open-checklist, done-checklist, etc). types=["open-task","open-checklist"] gets all open items.\n- search: Search lines in a note (requires query + note ref)\n\nTask actions:\n- search_global: Search tasks across all notes (requires query, "*" for all)\n- add: Add task (requires target + content). target = date ("today", "YYYY-MM-DD") or filename. Pass only task text — formatting auto-matches user settings. Position+heading: "start"+heading = after heading, "end"+heading = end of section. Default "end" = bottom of note. scheduleDate for >YYYY-MM-DD, [[Note Name]] to link, #tag, @mention.\n- complete: Mark done (note ref + lineIndex/line or taskQuery)\n- update: Update content/status (note ref + lineIndex or line)',
+            'Task lifecycle and paragraph inspection.\n\nParagraph actions:\n- get: Get note lines with metadata (requires note ref). Returns lineIndex, content, type. Filter with types param: base types (title, heading, bullet, text, quote, separator, empty), task/checklist by status (open-task, done-task, cancelled-task, scheduled-task, open-checklist, done-checklist, etc). types=["open-task","open-checklist"] gets all open items. Payload trims (unfiltered/no-types path only): includeContent=false drops the joined "content" string, includeLines=false drops the per-line "lines" array — both default true.\n- search: Search lines in a note (requires query + note ref)\n\nTask actions:\n- search_global: Search tasks across all notes (requires query, "*" for all)\n- add: Add task (requires target + content). target = date ("today", "YYYY-MM-DD") or filename. Pass only task text — formatting auto-matches user settings. Position+heading: "start"+heading = after heading, "end"+heading = end of section. Default "end" = bottom of note. scheduleDate for >YYYY-MM-DD, [[Note Name]] to link, #tag, @mention.\n- complete: Mark done (note ref + lineIndex/line or taskQuery)\n- update: Update content/status (note ref + lineIndex or line)',
           inputSchema: {
             type: 'object',
             properties: {
@@ -1561,13 +1564,33 @@ export function createServer(): Server {
                 type: 'number',
                 description: 'Last line (1-indexed) — used by get',
               },
+              types: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                  enum: [
+                    'title', 'heading', 'bullet', 'quote', 'separator', 'empty', 'text', 'code', 'table',
+                    'task', 'open-task', 'done-task', 'cancelled-task', 'scheduled-task',
+                    'checklist', 'open-checklist', 'done-checklist', 'cancelled-checklist', 'scheduled-checklist',
+                  ],
+                },
+                description: 'Filter to only these paragraph types — used by get',
+              },
+              includeContent: {
+                type: 'boolean',
+                description: 'Include the joined "content" string in the response (default: true; unfiltered/no-types path only) — used by get',
+              },
+              includeLines: {
+                type: 'boolean',
+                description: 'Include the per-line "lines" array in the response (default: true; unfiltered/no-types path only) — used by get',
+              },
               contextLines: {
                 type: 'number',
                 description: 'Context lines around matches — used by search',
               },
               paragraphMaxChars: {
                 type: 'number',
-                description: 'Max paragraph chars per match — used by search',
+                description: 'Max paragraph chars per match — used by search, search_global',
               },
               // Task-specific params
               status: {
@@ -1577,7 +1600,7 @@ export function createServer(): Server {
               },
               content: {
                 type: 'string',
-                description: 'Task content — used by add, update (without marker prefix)',
+                description: 'Task content — used by add, update (without marker prefix). Not the "get" payload-trim flags — those are includeContent/includeLines.',
               },
               target: {
                 type: 'string',
