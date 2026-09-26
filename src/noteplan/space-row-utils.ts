@@ -57,9 +57,29 @@ export function bridgeRowToNote(row: BridgeSpaceRow, allRows?: BridgeSpaceRow[])
     source: 'space',
     spaceId,
     folder: row.parent || undefined,
-    modifiedAt: row.modified_at ? new Date(row.modified_at) : undefined,
-    createdAt: row.created_at ? new Date(row.created_at) : undefined,
+    modifiedAt: parseSqliteTimestamp(row.modified_at),
+    createdAt: parseSqliteTimestamp(row.created_at),
   };
+}
+
+const ZONED = /(?:Z|[+-]\d{2}:?\d{2})$/i;
+
+/**
+ * teamspace.db's created_at/modified_at are UTC with no zone suffix
+ * (sqlite-writer's currentSqliteTimestamp: `toISOString().replace('Z', '')`).
+ * `new Date()` reads a zone-less date-time as LOCAL time, which put every
+ * space note's timestamps off by the Mac's UTC offset (5 h ahead in CDT), so
+ * a zone-less value is read as UTC here; an explicit zone is kept.
+ */
+export function parseSqliteTimestamp(value: string | null | undefined): Date | undefined {
+  if (!value) return undefined;
+  let s = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(s)) {
+    s = s.replace(' ', 'T');
+    if (!ZONED.test(s)) s += 'Z';
+  }
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? undefined : d;
 }
 
 /**
