@@ -1182,6 +1182,17 @@ export function createServer(): Server {
                 type: 'boolean',
                 description: 'Include note body content (default: false)',
               },
+              brief: {
+                type: 'boolean',
+                description:
+                  'Metadata + frontmatter + heading map only, no body or preview (default: false). Takes priority over includeContent/previewChars — the cheapest way to see a note\'s shape before reading it',
+              },
+              format: {
+                type: 'string',
+                enum: ['flat', 'lines', 'both'],
+                description:
+                  'Shape when includeContent=true: "flat" (default) joined content only; "lines" per-line array with line numbers, for follow-up edits; "both" (highest cost)',
+              },
               startLine: {
                 type: 'number',
                 description: 'First line when includeContent=true (1-indexed)',
