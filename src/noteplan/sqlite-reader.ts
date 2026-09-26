@@ -13,6 +13,7 @@ import {
   filterBridgeRowsByTrash,
   findRootSpaceIdFromRows,
   isTrashFolderRow,
+  parseSqliteTimestamp,
 } from './space-row-utils.js';
 
 // Possible NotePlan storage paths (same as file-reader.ts)
@@ -349,8 +350,8 @@ function rowToNote(row: SQLiteNoteRow, database?: SqliteDatabase): Note {
     source: 'space',
     spaceId,
     folder: row.parent || undefined,
-    modifiedAt: row.modified_at ? new Date(row.modified_at) : undefined,
-    createdAt: row.created_at ? new Date(row.created_at) : undefined,
+    modifiedAt: parseSqliteTimestamp(row.modified_at),
+    createdAt: parseSqliteTimestamp(row.created_at),
   };
 }
 

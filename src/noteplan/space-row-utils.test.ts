@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  bridgeRowToNote,
   filterBridgeRowsByTrash,
   findRootSpaceIdFromRows,
   isTrashFolderRow,
+  parseSqliteTimestamp,
 } from './space-row-utils.js';
 import { SQLITE_NOTE_TYPES } from './types.js';
 import type { BridgeSpaceRow } from '../transport/bridge-client.js';
@@ -139,5 +141,63 @@ describe('findRootSpaceIdFromRows', () => {
     ];
     expect(findRootSpaceIdFromRows('a', rows)).toBeUndefined();
     expect(findRootSpaceIdFromRows('b', rows)).toBeUndefined();
+  });
+});
+
+// teamspace.db stores created_at/modified_at as UTC with no zone suffix —
+// the writer's currentSqliteTimestamp() is `toISOString().replace('Z', '')`.
+// `new Date()` reads a zone-less date-time as LOCAL time, so on a Mac in CDT a
+// note written at 15:32:31Z came back as modifiedAt 20:32:31Z, five hours
+// ahead (kendoclaw np-live lane, 2026-09-26). Pinned to a non-UTC zone so the
+// test is red on any host, a UTC CI runner included.
+describe('bridgeRowToNote timestamps', () => {
+  const savedTZ = process.env.TZ;
+  beforeEach(() => {
+    process.env.TZ = 'America/Chicago';
+  });
+  afterEach(() => {
+    process.env.TZ = savedTZ;
+  });
+
+  it('reads a zone-less stored timestamp as UTC, the way the writer stored it', () => {
+    const note = bridgeRowToNote(
+      row({ id: 'n1', modified_at: '2026-09-26T15:32:31.123', created_at: '2026-09-26 15:30:00' }),
+    );
+    expect(note.modifiedAt?.toISOString()).toBe('2026-09-26T15:32:31.123Z');
+    expect(note.createdAt?.toISOString()).toBe('2026-09-26T15:30:00.000Z');
+  });
+
+  it('keeps an explicit zone as written', () => {
+    const note = bridgeRowToNote(
+      row({ id: 'n2', modified_at: '2026-09-26T15:32:31Z', created_at: '2026-09-26T10:30:00-05:00' }),
+    );
+    expect(note.modifiedAt?.toISOString()).toBe('2026-09-26T15:32:31.000Z');
+    expect(note.createdAt?.toISOString()).toBe('2026-09-26T15:30:00.000Z');
+  });
+});
+
+describe('parseSqliteTimestamp', () => {
+  const savedTZ = process.env.TZ;
+  beforeEach(() => {
+    process.env.TZ = 'America/Chicago';
+  });
+  afterEach(() => {
+    process.env.TZ = savedTZ;
+  });
+
+  it('returns undefined for missing or unparseable values', () => {
+    expect(parseSqliteTimestamp(undefined)).toBeUndefined();
+    expect(parseSqliteTimestamp(null)).toBeUndefined();
+    expect(parseSqliteTimestamp('')).toBeUndefined();
+    expect(parseSqliteTimestamp('not a date')).toBeUndefined();
+  });
+
+  it('reads the space-separated SQLite datetime form as UTC', () => {
+    expect(parseSqliteTimestamp('2026-09-26 15:32:31')?.toISOString()).toBe('2026-09-26T15:32:31.000Z');
+  });
+
+  it('keeps an offset written with or without a colon', () => {
+    expect(parseSqliteTimestamp('2026-09-26T10:32:31-05:00')?.toISOString()).toBe('2026-09-26T15:32:31.000Z');
+    expect(parseSqliteTimestamp('2026-09-26T10:32:31-0500')?.toISOString()).toBe('2026-09-26T15:32:31.000Z');
   });
 });
