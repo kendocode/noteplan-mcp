@@ -2713,6 +2713,12 @@ export async function replaceLines(params: z.infer<typeof replaceLinesSchema>) {
       );
     }
 
+    // The lines being replaced, captured before the splice (adopted from upstream
+    // 1.1.30's replace_lines preview, 857b0b3).
+    const replacedLinesPreview = allLines
+      .slice(startIndex, startIndex + lineCountToReplace)
+      .slice(0, 20)
+      .map((content, index) => ({ line: startIndex + 1 + index, content }));
     allLines.splice(startIndex, lineCountToReplace, ...replacementLines);
     const replacedContent = allLines.join('\n');
 
@@ -2726,6 +2732,8 @@ export async function replaceLines(params: z.infer<typeof replaceLinesSchema>) {
       message: `Dry run: lines ${boundedStartLine}-${boundedEndLine} would be replaced`,
       extra: {
         lineCountToReplace,
+        replacedLinesPreview,
+        previewTruncated: lineCountToReplace > replacedLinesPreview.length,
         insertedLineCount: replacementLines.length,
         lineDelta,
         indentationStyle,
